@@ -172,8 +172,9 @@ class VLLMPlugin(RuntimePlugin):
             )
         else:
             weights_m = Measurement[int].unavailable(
-                f"vLLM /metrics does not expose {_METRIC_WEIGHTS_BYTES} "
-                "(available in vLLM ≥ 0.6). Upgrade vLLM for weight tracking."
+                f"vLLM /metrics does not expose {_METRIC_WEIGHTS_BYTES}. "
+                "vLLM 0.15+ reports KV usage % only — weight/KV byte totals "
+                "require embedded engine introspection (future release)."
             )
         components.append(MemoryComponent(
             name=ComponentName.WEIGHTS,
@@ -193,9 +194,9 @@ class VLLMPlugin(RuntimePlugin):
             # Try to compute from usage % × device VRAM (approximation warning)
             # Actually — no estimation. Mark unavailable.
             kv_m = Measurement[int].unavailable(
-                f"vLLM /metrics does not expose {_METRIC_KV_BYTES} "
-                "(available in vLLM ≥ 0.6). "
-                f"Cache usage fraction: {self._kv_usage_pct(metrics)}"
+                f"vLLM /metrics does not expose {_METRIC_KV_BYTES}. "
+                f"KV cache usage fraction: {self._kv_usage_pct(metrics)} "
+                "(byte totals require embedded engine introspection)."
             )
         components.append(MemoryComponent(
             name=ComponentName.KV_CACHE,

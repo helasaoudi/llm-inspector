@@ -22,6 +22,36 @@ from llm_inspector.serialization import model_from_dict
 from llm_inspector.sources.resolver import get_resolver
 
 
+def merge_model_results(
+    primary: ModelResult,
+    secondary: ModelResult | None,
+) -> ModelResult:
+    """
+    Merge two ModelResults field-by-field.
+
+    ``primary`` wins when a field is available; otherwise ``secondary`` fills
+    the gap.  Used to combine embedded adapter data with runtime API data.
+    """
+    if secondary is None:
+        return primary
+
+    def _pick(
+        first: Measurement[str] | Measurement[int],
+        second: Measurement[str] | Measurement[int],
+    ) -> Measurement[str] | Measurement[int]:
+        return first if first.is_available else second
+
+    return ModelResult(
+        name=_pick(primary.name, secondary.name),  # type: ignore[arg-type]
+        architecture=_pick(primary.architecture, secondary.architecture),  # type: ignore[arg-type]
+        parameter_count=_pick(primary.parameter_count, secondary.parameter_count),  # type: ignore[arg-type]
+        precision=_pick(primary.precision, secondary.precision),  # type: ignore[arg-type]
+        context_length=_pick(primary.context_length, secondary.context_length),  # type: ignore[arg-type]
+        tensor_parallel=_pick(primary.tensor_parallel, secondary.tensor_parallel),  # type: ignore[arg-type]
+        pipeline_parallel=_pick(primary.pipeline_parallel, secondary.pipeline_parallel),  # type: ignore[arg-type]
+    )
+
+
 class ModelCollector(Collector[ModelResult]):
     """
     Collect model identity from the active runtime plugin or /proc inspection.
@@ -42,16 +72,17 @@ class ModelCollector(Collector[ModelResult]):
         assert isinstance(ctx, InspectionContext)
 
         # 1. Embedded inspector (highest fidelity when attach() was called)
+        embedded: ModelResult | None = None
         embedded_data = get_resolver().fetch("model", ctx)
         if embedded_data is not None:
             embedded = model_from_dict(ModelResult, embedded_data)
-            if embedded.name.is_available:
-                return embedded
 
-        # 2. Runtime plugin API
-        result = ctx.plugin.get_model_info(ctx)
-        if result is not None:
-            return result
+        # 2. Runtime plugin API — merged with embedded so API fills gaps
+        api_result = ctx.plugin.get_model_info(ctx)
+        if embedded is not None and embedded.name.is_available:
+            return merge_model_results(embedded, api_result)
+        if api_result is not None:
+            return api_result
 
         # 3. /proc/<pid> inspection — works for any process on Linux.
         #    Model name can come from either:

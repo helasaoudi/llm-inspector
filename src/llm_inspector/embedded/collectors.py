@@ -113,19 +113,28 @@ def collect_model_embedded(
         else Measurement[str].unavailable("Architecture not exposed by adapter.")
     )
 
+    def _optional_int(method_name: str, fallback: str) -> Measurement[int]:
+        fn = getattr(adapter, method_name, None)
+        if callable(fn):
+            return fn(ctx)
+        return Measurement[int].unavailable(fallback)
+
     result = ModelResult(
         name=name,
         architecture=architecture,
         parameter_count=adapter.parameter_count(ctx),
         precision=adapter.precision(ctx),
-        context_length=Measurement[int].unavailable(
-            "Context length requires runtime-specific adapter extension."
+        context_length=_optional_int(
+            "context_length",
+            "Context length requires runtime-specific adapter extension.",
         ),
-        tensor_parallel=Measurement[int].unavailable(
-            "Tensor parallel requires vLLM adapter extension."
+        tensor_parallel=_optional_int(
+            "tensor_parallel",
+            "Tensor parallel requires runtime-specific adapter extension.",
         ),
-        pipeline_parallel=Measurement[int].unavailable(
-            "Pipeline parallel requires vLLM adapter extension."
+        pipeline_parallel=_optional_int(
+            "pipeline_parallel",
+            "Pipeline parallel requires runtime-specific adapter extension.",
         ),
     )
     return model_to_dict(result)
