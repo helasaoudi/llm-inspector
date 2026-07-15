@@ -139,23 +139,18 @@ class CUDABackend(HardwareBackend):
         handle: object,
         device_index: int,
     ) -> list[DeviceProcess]:
-        procs: list[DeviceProcess] = []
-        seen: set[int] = set()
+        """
+        Return only *compute* processes on this device.
 
-        # Compute processes (ML workloads)
+        Graphics processes (Xorg, gnome-shell, plasmashell…) are
+        deliberately excluded — LLM inference is always a compute
+        workload (Type C in nvidia-smi). Including display-server
+        PIDs would pollute ``llminspect ps`` with irrelevant rows.
+        """
+        procs: list[DeviceProcess] = []
         with contextlib.suppress(Exception):
             for p in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):  # type: ignore[attr-defined]
-                # usedGpuMemory may be None on unified-memory GPUs
+                # usedGpuMemory may be None on unified-memory GPUs (GB10)
                 mem = getattr(p, "usedGpuMemory", None) or 0
                 procs.append(DeviceProcess(pid=p.pid, device_index=device_index, vram_used_bytes=mem))
-                seen.add(p.pid)
-
-        # Graphics processes (display server, etc.)
-        with contextlib.suppress(Exception):
-            for p in pynvml.nvmlDeviceGetGraphicsRunningProcesses(handle):  # type: ignore[attr-defined]
-                if p.pid not in seen:
-                    mem = getattr(p, "usedGpuMemory", None) or 0
-                    procs.append(DeviceProcess(pid=p.pid, device_index=device_index, vram_used_bytes=mem))
-                    seen.add(p.pid)
-
         return procs
