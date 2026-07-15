@@ -2,11 +2,11 @@
 MemoryCollector — Phase B.
 
 Reports raw, measurable memory facts about the inference process.
-Does NOT explain where memory goes — that is MemoryBreakdownCollector.
 
-In Phase 1, this collector uses only NVML (via the backend) and psutil.
-PyTorch allocated/reserved memory is marked Unavailable until the plugin
-infrastructure is in place (Phase 2).
+Data resolution:
+  - process_ram, gpu_used: always external (psutil, NVML)
+  - gpu_allocated, gpu_reserved, peak: EmbeddedSource if attached,
+    otherwise Unavailable with honest reason
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from llm_inspector.collectors.base import Collector, CollectorResult
 from llm_inspector.models.enums import CollectorPhase
 from llm_inspector.models.measurement import Measurement
 from llm_inspector.models.results import MemoryResult
+from llm_inspector.serialization import model_from_dict
+from llm_inspector.sources.resolver import get_resolver
 
 
 class MemoryCollector(Collector[MemoryResult]):
@@ -56,20 +58,35 @@ class MemoryCollector(Collector[MemoryResult]):
                     source=f"NVML nvmlDeviceGetComputeRunningProcesses() — GPU {pid_procs[0].device_index}",
                 )
 
-        # GPU Allocated / Reserved / Peak require torch.cuda.memory_stats()
-        # which can only be called from inside the target process.
-        # External inspection via NVML only gives total VRAM used per process.
-        unavail_torch = Measurement[int].unavailable(
-            "GPU allocated/reserved/peak require in-process PyTorch hooks. "
-            "Total GPU used is available via NVML above."
+        # GPU Allocated / Reserved / Peak — try embedded source first
+        gpu_allocated = Measurement[int].unavailable(
+            "GPU allocated requires embedded inspector. "
+            "Add: from llm_inspector import attach; attach(model=...)"
         )
+        gpu_reserved = Measurement[int].unavailable(
+            "GPU reserved requires embedded inspector. "
+            "Add: from llm_inspector import attach; attach(model=...)"
+        )
+        peak = Measurement[int].unavailable(
+            "Peak GPU memory requires embedded inspector with streaming counters."
+        )
+
+        embedded_data = get_resolver().fetch("memory", ctx)
+        if embedded_data is not None:
+            embedded = model_from_dict(MemoryResult, embedded_data)
+            if embedded.gpu_allocated.is_available:
+                gpu_allocated = embedded.gpu_allocated
+            if embedded.gpu_reserved.is_available:
+                gpu_reserved = embedded.gpu_reserved
+            if embedded.peak.is_available:
+                peak = embedded.peak
 
         return MemoryResult(
             process_ram=process_ram,
             gpu_used=gpu_used,
-            gpu_allocated=unavail_torch,
-            gpu_reserved=unavail_torch,
-            peak=unavail_torch,
+            gpu_allocated=gpu_allocated,
+            gpu_reserved=gpu_reserved,
+            peak=peak,
         )
 
     @staticmethod

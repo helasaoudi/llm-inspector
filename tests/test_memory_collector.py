@@ -57,7 +57,7 @@ class TestMemoryCollector:
         assert data is not None
         assert not data.gpu_used.is_available
 
-    def test_torch_stats_unavailable_in_phase_1(self):
+    def test_torch_stats_unavailable_without_embedded(self):
         pid = os.getpid()
         ctx = _make_context(pid)
         collector = MemoryCollector()
@@ -65,10 +65,11 @@ class TestMemoryCollector:
 
         data = result.data
         assert data is not None
-        # Phase 1: PyTorch stats always unavailable
+        # Without embedded inspector attached, PyTorch stats unavailable
         assert not data.gpu_allocated.is_available
         assert not data.gpu_reserved.is_available
         assert not data.peak.is_available
+        assert "embedded" in (data.gpu_allocated.reason or "").lower()
 
     def test_process_ram_available_for_current_process(self):
         pid = os.getpid()

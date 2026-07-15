@@ -56,9 +56,16 @@ class FastAPIPlugin(RuntimePlugin):
     # ── Public capability methods ─────────────────────────────────────────────
 
     def get_version(self, ctx: "InspectionContext") -> Measurement[str]:
+        """
+        Return the *framework* version (PyTorch), not the app version.
+
+        The FastAPI app's own version (e.g. 'STT-TTS Service 1.0.0') is
+        surfaced separately under Runtime Details → App, since it does not
+        describe the inference runtime.
+        """
         base = self._base_url(ctx.process.cmdline)
 
-        # HF TGI exposes version in /info
+        # HF TGI exposes the runtime version in /info
         info = http.get_json(f"{base}/info")
         if isinstance(info, dict) and "version" in info:
             return Measurement[str].available(
@@ -66,21 +73,7 @@ class FastAPIPlugin(RuntimePlugin):
                 source=f"GET {base}/info → .version",
             )
 
-        # OpenAPI schema exposes the app version (info.version)
-        schema = http.get_json(f"{base}/openapi.json")
-        if isinstance(schema, dict):
-            app_info = schema.get("info")
-            if isinstance(app_info, dict):
-                title = app_info.get("title")
-                ver = app_info.get("version")
-                if ver:
-                    label = f"{title} {ver}" if title else str(ver)
-                    return Measurement[str].available(
-                        label,
-                        source=f"GET {base}/openapi.json → .info",
-                    )
-
-        # PyTorch version from process environment (needs read access to /proc)
+        # PyTorch version from process environment (needs /proc read access)
         from llm_inspector.utils import procfs  # noqa: PLC0415
 
         snap = procfs.snapshot(ctx.process.pid)
@@ -91,7 +84,8 @@ class FastAPIPlugin(RuntimePlugin):
             )
 
         return Measurement[str].unavailable(
-            "FastAPI plugin: server does not expose a version endpoint."
+            "Framework version not exposed by API. "
+            "Run with sudo to read PyTorch version from /proc environ."
         )
 
     def get_model_info(self, ctx: "InspectionContext") -> ModelResult | None:
@@ -135,15 +129,18 @@ class FastAPIPlugin(RuntimePlugin):
             ),
         }
 
-        # App title/description from OpenAPI schema
+        # App identity from OpenAPI schema
         schema = http.get_json(f"{base}/openapi.json")
         if isinstance(schema, dict):
             app_info = schema.get("info")
             if isinstance(app_info, dict):
-                if app_info.get("title"):
-                    details["Service"] = Measurement[str].available(
-                        str(app_info["title"]),
-                        source=f"GET {base}/openapi.json → .info.title",
+                title = app_info.get("title")
+                app_ver = app_info.get("version")
+                if title:
+                    label = f"{title} {app_ver}" if app_ver else str(title)
+                    details["App"] = Measurement[str].available(
+                        label,
+                        source=f"GET {base}/openapi.json → .info",
                     )
             paths = schema.get("paths")
             if isinstance(paths, dict):

@@ -2,10 +2,10 @@
 ModelCollector — Phase B.
 
 Resolution order for model identity:
-  1. Runtime plugin (API call — highest fidelity)
-  2. /proc/<pid>/maps  — model weight files memory-mapped by the process
-                         (HuggingFace cache paths reveal model name + weights size)
-  3. Fully Unavailable with an honest explanation
+  1. EmbeddedSource (in-process adapter — HF, PyTorch, vLLM engine)
+  2. Runtime plugin API (Ollama /api/ps, vLLM /v1/models, openapi…)
+  3. /proc/<pid>/maps + environ
+  4. Fully Unavailable with an honest explanation
 
 This means any process that has model weights memory-mapped will have its
 model name extracted even if the runtime exposes no API — no estimation,
@@ -18,6 +18,8 @@ from llm_inspector.collectors.base import Collector, CollectorResult
 from llm_inspector.models.enums import CollectorPhase
 from llm_inspector.models.measurement import Measurement
 from llm_inspector.models.results import ModelResult
+from llm_inspector.serialization import model_from_dict
+from llm_inspector.sources.resolver import get_resolver
 
 
 class ModelCollector(Collector[ModelResult]):
@@ -39,12 +41,19 @@ class ModelCollector(Collector[ModelResult]):
 
         assert isinstance(ctx, InspectionContext)
 
-        # 1. Try plugin (API-based, highest fidelity)
+        # 1. Embedded inspector (highest fidelity when attach() was called)
+        embedded_data = get_resolver().fetch("model", ctx)
+        if embedded_data is not None:
+            embedded = model_from_dict(ModelResult, embedded_data)
+            if embedded.name.is_available:
+                return embedded
+
+        # 2. Runtime plugin API
         result = ctx.plugin.get_model_info(ctx)
         if result is not None:
             return result
 
-        # 2. Fallback: /proc/<pid> inspection — works for any process on Linux.
+        # 3. /proc/<pid> inspection — works for any process on Linux.
         #    Model name can come from either:
         #      a) memory-mapped weight files (HuggingFace cache path), or
         #      b) environment variables (MODEL_NAME, WHISPER_MODEL, etc.)
