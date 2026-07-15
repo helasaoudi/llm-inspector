@@ -128,11 +128,13 @@ class Inspector:
         """
         Inspect all LLM processes visible on this machine.
 
-        Strategy (in order):
+        Strategy:
         1. GPU-attached processes via the hardware backend (NVML on CUDA).
-        2. If none found (CPU backend / no GPU), fall back to scanning all
-           processes by cmdline heuristic — catches Ollama on macOS, HF
-           scripts without a GPU, etc.
+           All GPU-attached processes are shown regardless of runtime —
+           GPU attachment is itself the signal of an ML workload.
+        2. Additionally merge in any heuristic-detected processes (Ollama,
+           vLLM, HF) that may not have GPU attachment (CPU inference).
+        3. If no GPU backend available (macOS), heuristic scan only.
 
         Used by ``llminspect ps``.  Silently skips processes that fail
         Phase A (exited, access denied).
@@ -140,9 +142,12 @@ class Inspector:
         backend = self._backend_registry.best_available()
         pid_map = backend.pid_to_devices()
 
-        # Fallback: heuristic scan of all processes when GPU listing is empty
-        if not pid_map:
-            pid_map = self._heuristic_scan()
+        # Always add heuristic-detected processes not already in the GPU map.
+        # This catches: Ollama on macOS, CPU inference, processes that appear
+        # in cmdline scan but not in NVML (e.g. launcher processes).
+        for pid, devices in self._heuristic_scan().items():
+            if pid not in pid_map:
+                pid_map[pid] = devices
 
         reports: list[InspectionReport] = []
         for pid in pid_map:

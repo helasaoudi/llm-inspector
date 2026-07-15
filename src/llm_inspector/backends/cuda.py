@@ -1,9 +1,13 @@
 """
 CUDABackend — NVIDIA GPU support via pynvml.
 
-This is the primary backend for production Linux servers.
 All pynvml calls are isolated here; the rest of the codebase
 never imports pynvml directly.
+
+Grace Blackwell / unified-memory GPUs (GB10, GB200, etc.) report
+"Not Supported" for nvmlDeviceGetMemoryInfo(). Every device-level
+query is wrapped individually so one unsupported call never kills
+the whole device listing.
 """
 
 from __future__ import annotations
@@ -36,7 +40,11 @@ class CUDABackend(HardwareBackend):
             pynvml.nvmlInit()
             try:
                 count = pynvml.nvmlDeviceGetCount()
-                return [self._read_device(pynvml, i) for i in range(count)]
+                devices = []
+                for i in range(count):
+                    with contextlib.suppress(Exception):
+                        devices.append(self._read_device(pynvml, i))
+                return devices
             finally:
                 pynvml.nvmlShutdown()
         except Exception:  # noqa: BLE001
@@ -87,10 +95,25 @@ class CUDABackend(HardwareBackend):
     @staticmethod
     def _read_device(pynvml: object, index: int) -> DeviceInfo:  # type: ignore[override]
         handle = pynvml.nvmlDeviceGetHandleByIndex(index)  # type: ignore[attr-defined]
-        name: str = pynvml.nvmlDeviceGetName(handle)  # type: ignore[attr-defined]
-        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)  # type: ignore[attr-defined]
-        util = pynvml.nvmlDeviceGetUtilizationRates(handle)  # type: ignore[attr-defined]
 
+        # Name — always available
+        name: str = pynvml.nvmlDeviceGetName(handle)  # type: ignore[attr-defined]
+
+        # Memory — not supported on unified-memory GPUs (GB10, GB200)
+        vram_total: int | None = None
+        vram_used: int | None = None
+        with contextlib.suppress(Exception):
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)  # type: ignore[attr-defined]
+            vram_total = mem.total
+            vram_used = mem.used
+
+        # Utilization — may also be unsupported
+        gpu_util: int | None = None
+        with contextlib.suppress(Exception):
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)  # type: ignore[attr-defined]
+            gpu_util = util.gpu
+
+        # Driver / CUDA versions — system-wide, should always work
         driver: str | None = None
         cuda_v: str | None = None
         with contextlib.suppress(Exception):
@@ -103,9 +126,9 @@ class CUDABackend(HardwareBackend):
         return DeviceInfo(
             index=index,
             name=name,
-            vram_total_bytes=mem.total,
-            vram_used_bytes=mem.used,
-            gpu_utilization_pct=util.gpu,
+            vram_total_bytes=vram_total,  # None on unified-memory GPUs
+            vram_used_bytes=vram_used,    # None on unified-memory GPUs
+            gpu_utilization_pct=gpu_util, # None if unsupported
             driver_version=driver,
             cuda_version=cuda_v,
         )
@@ -117,23 +140,22 @@ class CUDABackend(HardwareBackend):
         device_index: int,
     ) -> list[DeviceProcess]:
         procs: list[DeviceProcess] = []
+        seen: set[int] = set()
+
+        # Compute processes (ML workloads)
         with contextlib.suppress(Exception):
             for p in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):  # type: ignore[attr-defined]
-                procs.append(
-                    DeviceProcess(
-                        pid=p.pid,
-                        device_index=device_index,
-                        vram_used_bytes=p.usedGpuMemory or 0,
-                    )
-                )
+                # usedGpuMemory may be None on unified-memory GPUs
+                mem = getattr(p, "usedGpuMemory", None) or 0
+                procs.append(DeviceProcess(pid=p.pid, device_index=device_index, vram_used_bytes=mem))
+                seen.add(p.pid)
+
+        # Graphics processes (display server, etc.)
         with contextlib.suppress(Exception):
             for p in pynvml.nvmlDeviceGetGraphicsRunningProcesses(handle):  # type: ignore[attr-defined]
-                if not any(existing.pid == p.pid for existing in procs):
-                    procs.append(
-                        DeviceProcess(
-                            pid=p.pid,
-                            device_index=device_index,
-                            vram_used_bytes=p.usedGpuMemory or 0,
-                        )
-                    )
+                if p.pid not in seen:
+                    mem = getattr(p, "usedGpuMemory", None) or 0
+                    procs.append(DeviceProcess(pid=p.pid, device_index=device_index, vram_used_bytes=mem))
+                    seen.add(p.pid)
+
         return procs

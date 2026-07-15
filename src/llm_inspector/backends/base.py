@@ -10,13 +10,19 @@ from llm_inspector.models.enums import BackendKind
 
 @dataclass(frozen=True)
 class DeviceInfo:
-    """Snapshot of one hardware accelerator."""
+    """
+    Snapshot of one hardware accelerator.
+
+    ``vram_total_bytes``, ``vram_used_bytes``, and ``gpu_utilization_pct``
+    may be None on unified-memory GPUs (GB10, GB200) where the standard
+    NVML device memory query is not supported.
+    """
 
     index: int
     name: str
-    vram_total_bytes: int
-    vram_used_bytes: int
-    gpu_utilization_pct: int
+    vram_total_bytes: int | None
+    vram_used_bytes: int | None
+    gpu_utilization_pct: int | None
     driver_version: str | None = None
     cuda_version: str | None = None
 

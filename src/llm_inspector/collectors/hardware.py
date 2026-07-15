@@ -119,8 +119,10 @@ class HardwareCollector(Collector[HardwareResult]):
             backend=backend.kind,
             device_index=device.index,
             gpu_name=device.name,
+            # device-level totals may be None on unified-memory GPUs (GB10)
             vram_total_bytes=device.vram_total_bytes,
-            vram_used_bytes=primary_proc.vram_used_bytes,
+            # per-process VRAM is available even when device total is not
+            vram_used_bytes=primary_proc.vram_used_bytes or device.vram_used_bytes,
             gpu_utilization_pct=device.gpu_utilization_pct,
             driver_version=device.driver_version,
             cuda_version=device.cuda_version,
