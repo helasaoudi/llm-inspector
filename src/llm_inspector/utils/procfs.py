@@ -54,6 +54,20 @@ _FRAMEWORK_SIGNATURES: list[tuple[str, str]] = [
     ("tritonserver", "Triton"),
 ]
 
+# Environment variable names that carry model identity, in priority order.
+# Many inference servers set one of these when they load a model.
+_MODEL_ENV_VARS: tuple[str, ...] = (
+    "SERVED_MODEL_NAME",   # vLLM
+    "MODEL_ID",
+    "MODEL_NAME",
+    "HF_MODEL_ID",
+    "HF_MODEL",
+    "MODEL",
+    "WHISPER_MODEL",       # Whisper STT servers
+    "LLM_MODEL",
+    "EMBEDDING_MODEL",
+)
+
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 
@@ -147,6 +161,32 @@ class ProcFSSnapshot:
     def cuda_visible_devices(self) -> str | None:
         """CUDA_VISIBLE_DEVICES environment variable, if set."""
         return self.environ.get("CUDA_VISIBLE_DEVICES")
+
+    @property
+    def model_from_env(self) -> tuple[str, str] | None:
+        """
+        Extract a model name from environment variables.
+
+        Returns (model_name, env_var_name) for provenance, or None.
+
+        Checks a curated priority list first, then falls back to any
+        variable ending in ``_MODEL`` whose value is not a filesystem path
+        (paths are handled by /proc/maps weight-file detection instead).
+        """
+        for var in _MODEL_ENV_VARS:
+            val = self.environ.get(var)
+            if val and not val.startswith("/"):
+                return val, var
+        # Heuristic: any *_MODEL variable holding a non-path value
+        for key, val in self.environ.items():
+            if key.endswith("_MODEL") and val and not val.startswith("/"):
+                return val, key
+        return None
+
+    @property
+    def pytorch_version(self) -> str | None:
+        """PyTorch version from the PYTORCH_VERSION env var, if present."""
+        return self.environ.get("PYTORCH_VERSION")
 
     @property
     def hf_model_path(self) -> str | None:

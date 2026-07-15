@@ -66,6 +66,30 @@ class FastAPIPlugin(RuntimePlugin):
                 source=f"GET {base}/info → .version",
             )
 
+        # OpenAPI schema exposes the app version (info.version)
+        schema = http.get_json(f"{base}/openapi.json")
+        if isinstance(schema, dict):
+            app_info = schema.get("info")
+            if isinstance(app_info, dict):
+                title = app_info.get("title")
+                ver = app_info.get("version")
+                if ver:
+                    label = f"{title} {ver}" if title else str(ver)
+                    return Measurement[str].available(
+                        label,
+                        source=f"GET {base}/openapi.json → .info",
+                    )
+
+        # PyTorch version from process environment (needs read access to /proc)
+        from llm_inspector.utils import procfs  # noqa: PLC0415
+
+        snap = procfs.snapshot(ctx.process.pid)
+        if snap.pytorch_version:
+            return Measurement[str].available(
+                f"PyTorch {snap.pytorch_version}",
+                source=f"/proc/{ctx.process.pid}/environ → $PYTORCH_VERSION",
+            )
+
         return Measurement[str].unavailable(
             "FastAPI plugin: server does not expose a version endpoint."
         )
@@ -111,6 +135,23 @@ class FastAPIPlugin(RuntimePlugin):
             ),
         }
 
+        # App title/description from OpenAPI schema
+        schema = http.get_json(f"{base}/openapi.json")
+        if isinstance(schema, dict):
+            app_info = schema.get("info")
+            if isinstance(app_info, dict):
+                if app_info.get("title"):
+                    details["Service"] = Measurement[str].available(
+                        str(app_info["title"]),
+                        source=f"GET {base}/openapi.json → .info.title",
+                    )
+            paths = schema.get("paths")
+            if isinstance(paths, dict):
+                details["Endpoints"] = Measurement[str].available(
+                    str(len(paths)),
+                    source=f"GET {base}/openapi.json → .paths",
+                )
+
         # Try HF TGI /info for extra runtime details
         info = http.get_json(f"{base}/info")
         if isinstance(info, dict):
@@ -135,10 +176,27 @@ class FastAPIPlugin(RuntimePlugin):
         port = cl.detect_port(cmdline, default=8000)
         return f"http://{host}:{port}"
 
+    # Keys that commonly hold a model name in a JSON response
+    _MODEL_NAME_KEYS: tuple[str, ...] = (
+        "model_id",
+        "model_name",
+        "model",
+        "model_size",
+        "name",
+        "id",
+        "size",
+    )
+
     def _probe_model_name(self, base: str) -> str | None:
         """
         Try well-known endpoints and return the model name if found.
         Sets self._name_source as a side-effect for provenance tracking.
+
+        Order:
+          1. OpenAI-compatible /v1/models
+          2. HF TGI /info
+          3. Generic /model_info
+          4. /openapi.json route discovery → call any model-info endpoint
         """
         # 1. OpenAI-compatible /v1/models  (LiteLLM, vLLM, many custom servers)
         data = http.get_json(f"{base}/v1/models")
@@ -153,18 +211,76 @@ class FastAPIPlugin(RuntimePlugin):
         # 2. HF Text Generation Inference /info
         info = http.get_json(f"{base}/info")
         if isinstance(info, dict):
-            for key in ("model_id", "model", "name"):
-                if key in info:
-                    self._name_source = f"GET {base}/info → .{key}"
-                    return str(info[key])
+            name = self._extract_name(info)
+            if name:
+                self._name_source = f"GET {base}/info"
+                return name
 
         # 3. Generic /model_info
         model_info = http.get_json(f"{base}/model_info")
         if isinstance(model_info, dict):
-            for key in ("model_id", "model", "name", "model_name"):
-                if key in model_info:
-                    self._name_source = f"GET {base}/model_info → .{key}"
-                    return str(model_info[key])
+            name = self._extract_name(model_info)
+            if name:
+                self._name_source = f"GET {base}/model_info"
+                return name
+
+        # 4. Discover model-info routes from the OpenAPI schema (FastAPI default).
+        #    Any GET path containing 'model' and 'info' (e.g.
+        #    /api/v1/whisper/model/info) is probed automatically.
+        name = self._probe_via_openapi(base)
+        if name:
+            return name
 
         _log.debug("FastAPIPlugin: no model name found at %s", base)
+        return None
+
+    def _probe_via_openapi(self, base: str) -> str | None:
+        """
+        Fetch /openapi.json, find GET model-info routes, call them,
+        and extract a model name. Works with any FastAPI server.
+        """
+        schema = http.get_json(f"{base}/openapi.json")
+        if not isinstance(schema, dict):
+            return None
+        paths = schema.get("paths")
+        if not isinstance(paths, dict):
+            return None
+
+        # Candidate GET routes that likely expose model identity
+        candidates: list[str] = []
+        for route, methods in paths.items():
+            if not isinstance(methods, dict) or "get" not in methods:
+                continue
+            low = route.lower()
+            has_param = "{" in route  # skip routes needing path params
+            if has_param:
+                continue
+            if ("model" in low and "info" in low) or low.endswith("/model"):
+                candidates.insert(0, route)  # highest priority
+            elif "model" in low or low.endswith("/info"):
+                candidates.append(route)
+
+        for route in candidates:
+            resp = http.get_json(f"{base}{route}")
+            if isinstance(resp, dict):
+                name = self._extract_name(resp)
+                if name:
+                    self._name_source = f"GET {base}{route} (via /openapi.json discovery)"
+                    return name
+
+        return None
+
+    def _extract_name(self, obj: dict) -> str | None:
+        """Extract a model name from a JSON dict using known keys."""
+        for key in self._MODEL_NAME_KEYS:
+            val = obj.get(key)
+            if val and isinstance(val, (str, int)):
+                return str(val)
+        # Nested: some servers wrap under 'model' or 'data'
+        for wrap in ("model", "data", "info"):
+            inner = obj.get(wrap)
+            if isinstance(inner, dict):
+                nested = self._extract_name(inner)
+                if nested:
+                    return nested
         return None

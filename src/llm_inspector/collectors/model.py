@@ -44,17 +44,25 @@ class ModelCollector(Collector[ModelResult]):
         if result is not None:
             return result
 
-        # 2. Fallback: /proc/<pid>/maps — works for any process on Linux
-        #    that has model weights memory-mapped (HuggingFace, llama.cpp, etc.)
+        # 2. Fallback: /proc/<pid> inspection — works for any process on Linux.
+        #    Model name can come from either:
+        #      a) memory-mapped weight files (HuggingFace cache path), or
+        #      b) environment variables (MODEL_NAME, WHISPER_MODEL, etc.)
         snap = procfs.snapshot(ctx.process.pid)
         hf_name = snap.hf_model_name
         weights_bytes = snap.total_weights_bytes
+        env_model = snap.model_from_env  # (name, env_var) or None
 
-        if not snap.maps_readable and not snap.fd_readable:
-            # /proc files unreadable — likely a different-user process
+        # Only treat as permission error if we could read *nothing* at all.
+        if (
+            not snap.maps_readable
+            and not snap.fd_readable
+            and not snap.environ_readable
+        ):
             reason = (
-                f"Cannot read /proc/{ctx.process.pid}/maps (permission denied). "
-                "Try running llminspect with sudo for cross-user inspection."
+                f"Cannot read /proc/{ctx.process.pid} (permission denied). "
+                "Try running with: sudo $(which llminspect) inspect "
+                f"{ctx.process.pid}"
             )
             return ModelResult(
                 name=Measurement[str].unavailable(reason),
@@ -66,33 +74,30 @@ class ModelCollector(Collector[ModelResult]):
                 pipeline_parallel=Measurement[int].unavailable(reason),
             )
 
-        if hf_name or weights_bytes:
+        if hf_name or weights_bytes or env_model:
+            # Model name — prefer HF cache path, then env var
             name_meas: Measurement[str]
             if hf_name:
                 name_meas = Measurement[str].available(
                     hf_name,
                     source=f"/proc/{ctx.process.pid}/maps → HuggingFace cache path",
                 )
+            elif env_model:
+                model_name, env_var = env_model
+                name_meas = Measurement[str].available(
+                    model_name,
+                    source=f"/proc/{ctx.process.pid}/environ → ${env_var}",
+                )
             else:
                 name_meas = Measurement[str].unavailable(
                     "Model weight files found in /proc maps but no HuggingFace "
-                    "cache path pattern detected."
+                    "cache path pattern or model env var detected."
                 )
 
-            # Parameter count from weight file size (rough, but measured)
-            # Typical: fp16 → 2 bytes/param, bf16 → 2, int4 → 0.5
-            param_meas: Measurement[int]
-            if weights_bytes:
-                # We don't know precision yet — defer to Unavailable rather
-                # than estimate. The bytes are shown in Memory Breakdown instead.
-                param_meas = Measurement[int].unavailable(
-                    "Parameter count requires knowing precision. "
-                    "See Memory Breakdown → Weights for raw size."
-                )
-            else:
-                param_meas = Measurement[int].unavailable(
-                    "No model weight files found in /proc maps."
-                )
+            param_meas = Measurement[int].unavailable(
+                "Parameter count requires runtime API. "
+                "See Memory Breakdown → Weights for raw mapped size."
+            )
 
             frameworks = snap.detected_frameworks
             arch_meas = (
