@@ -52,8 +52,8 @@ class MemoryBreakdownCollector(Collector[MemoryBreakdownResult]):
 
         # Plugin returned None — return fully-unavailable breakdown
         reason = (
-            f"Runtime plugin '{ctx.plugin.display_name}' does not implement "
-            "memory breakdown inspection."
+            f"{ctx.plugin.display_name} runtime does not expose memory breakdown. "
+            "KV cache, weights, and activations require runtime-specific API access."
         )
         return MemoryBreakdownResult(
             components=[

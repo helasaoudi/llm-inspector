@@ -41,8 +41,8 @@ class ModelCollector(Collector[ModelResult]):
 
         # Plugin returned None — mark everything unavailable
         reason = (
-            f"Runtime plugin '{ctx.plugin.display_name}' does not implement "
-            "model inspection.  Upgrade to a plugin that supports get_model_info()."
+            f"No model info available from {ctx.plugin.display_name} runtime. "
+            "The server does not expose a recognised model endpoint."
         )
         return ModelResult(
             name=Measurement[str].unavailable(reason),

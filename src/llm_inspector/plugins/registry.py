@@ -71,6 +71,7 @@ def build_default_registry() -> PluginRegistry:
     optional dependencies (requests, etc.) don't prevent the tool
     from starting when those runtimes aren't present.
     """
+    from llm_inspector.plugins.fastapi import FastAPIPlugin  # noqa: PLC0415
     from llm_inspector.plugins.huggingface import HuggingFacePlugin  # noqa: PLC0415
     from llm_inspector.plugins.ollama import OllamaPlugin  # noqa: PLC0415
     from llm_inspector.plugins.vllm import VLLMPlugin  # noqa: PLC0415
@@ -79,6 +80,7 @@ def build_default_registry() -> PluginRegistry:
     registry.register(RuntimeKind.VLLM, VLLMPlugin)
     registry.register(RuntimeKind.HUGGING_FACE, HuggingFacePlugin)
     registry.register(RuntimeKind.OLLAMA, OllamaPlugin)
+    registry.register(RuntimeKind.FASTAPI, FastAPIPlugin)
     # Phase 3: registry.register(RuntimeKind.TENSORRT, TensorRTPlugin)
     # Phase 3: registry.register(RuntimeKind.SGLANG, SGLangPlugin)
     # Phase 3: registry.register(RuntimeKind.LLAMA_CPP, LlamaCppPlugin)
