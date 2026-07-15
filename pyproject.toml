@@ -52,7 +52,7 @@ Repository = "https://github.com/helasaoudi/llm-inspector"
 "Bug Tracker" = "https://github.com/helasaoudi/llm-inspector/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["llm_inspector"]
+packages = ["src/llm_inspector"]
 
 [tool.ruff]
 target-version = "py311"
