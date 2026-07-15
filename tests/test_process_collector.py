@@ -12,6 +12,7 @@ from llm_inspector.models.enums import CollectorStatus, RuntimeKind
 @pytest.mark.parametrize("cmdline,expected", [
     (["python", "-m", "vllm.entrypoints.openai.api_server"], RuntimeKind.VLLM),
     (["python", "-m", "vllm", "--model", "meta-llama/Llama-3-8B"], RuntimeKind.VLLM),
+    (["VLLM::EngineCore"], RuntimeKind.VLLM),
     (["ollama", "serve"], RuntimeKind.OLLAMA),
     (["tritonserver", "--model-repository=/models"], RuntimeKind.TENSORRT),
     (["python", "inference.py", "--use-transformers"], RuntimeKind.HUGGING_FACE),

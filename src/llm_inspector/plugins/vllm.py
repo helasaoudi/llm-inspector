@@ -28,6 +28,7 @@ from llm_inspector.models.results import (
 from llm_inspector.plugins.base import RuntimePlugin
 from llm_inspector.utils.cmdline import detect_host, detect_port, parse_arg, parse_int_arg
 from llm_inspector.utils.http import find_metric, get_json, get_text, parse_prometheus
+from llm_inspector.utils.vllm_urls import is_engine_core_process, resolve_vllm_base_url
 
 if TYPE_CHECKING:
     from llm_inspector.inspector.context import InspectionContext
@@ -59,15 +60,20 @@ class VLLMPlugin(RuntimePlugin):
 
     def supports(self, process: "ProcessResult") -> bool:
         cmdline_str = " ".join(process.cmdline).lower()
-        return "vllm" in cmdline_str
+        return "vllm" in cmdline_str or is_engine_core_process(process.cmdline)
+
+    def _base_url(self, ctx: "InspectionContext") -> tuple[str, str]:
+        """Resolve API base URL with provenance (cmdline, env, or port probe)."""
+        from llm_inspector.utils import procfs  # noqa: PLC0415
+
+        snap = procfs.snapshot(ctx.pid)
+        return resolve_vllm_base_url(ctx.process.cmdline, snap.environ)
 
     # ── Capability methods ────────────────────────────────────────────────────
 
     def get_model_info(self, ctx: "InspectionContext") -> ModelResult | None:
         cmdline = ctx.process.cmdline
-        host = detect_host(cmdline, "127.0.0.1")
-        port = detect_port(cmdline, 8000)
-        base_url = f"http://{host}:{port}"
+        base_url, _url_source = self._base_url(ctx)
 
         # Model name — try API first, fall back to cmdline.
         # Intentionally avoid -m (clashes with `python -m <module>`).
@@ -127,10 +133,7 @@ class VLLMPlugin(RuntimePlugin):
     def get_memory_breakdown(
         self, ctx: "InspectionContext"
     ) -> MemoryBreakdownResult | None:
-        cmdline = ctx.process.cmdline
-        host = detect_host(cmdline, "127.0.0.1")
-        port = detect_port(cmdline, 8000)
-        base_url = f"http://{host}:{port}"
+        base_url, _ = self._base_url(ctx)
         metrics_url = f"{base_url}/metrics"
 
         raw_text = get_text(metrics_url)
@@ -269,15 +272,13 @@ class VLLMPlugin(RuntimePlugin):
         return details
 
     def get_version(self, ctx: "InspectionContext") -> Measurement[str]:
-        cmdline = ctx.process.cmdline
-        host = detect_host(cmdline, "127.0.0.1")
-        port = detect_port(cmdline, 8000)
+        base_url, _ = self._base_url(ctx)
         # Try the /version or /v1/openai endpoint
-        data = get_json(f"http://{host}:{port}/version")
+        data = get_json(f"{base_url}/version")
         if isinstance(data, dict) and "version" in data:
             return Measurement[str].available(
                 data["version"],
-                source=f"vLLM GET http://{host}:{port}/version",
+                source=f"vLLM GET {base_url}/version",
             )
         return Measurement[str].unavailable(
             "vLLM version endpoint not reachable. Consider upgrading vLLM."

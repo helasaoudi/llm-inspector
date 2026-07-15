@@ -18,11 +18,19 @@ from llm_inspector.models.measurement import Measurement
 
 
 def _is_vllm_engine(obj: Any) -> bool:
-    """Detect vLLM engine without hard import dependency."""
+    """Detect vLLM engine / EngineCore without hard import dependency."""
     cls_name = type(obj).__name__
     module = type(obj).__module__ or ""
     return (
-        cls_name in ("LLMEngine", "AsyncLLMEngine", "LLM", "AsyncLLM")
+        cls_name
+        in (
+            "LLMEngine",
+            "AsyncLLMEngine",
+            "LLM",
+            "AsyncLLM",
+            "EngineCore",          # vLLM ≥ 0.6 multiprocess worker
+            "EngineCoreProc",
+        )
         or "vllm" in module.lower()
     )
 
@@ -46,8 +54,7 @@ class VLLMAdapter(ModelAdapter):
         if engine is None:
             return Measurement[str].unavailable("No vLLM engine bound.")
         try:
-            # vLLM exposes model config on the engine
-            cfg = getattr(engine, "model_config", None)
+            cfg = self._model_config(engine)
             if cfg is not None:
                 name = getattr(cfg, "model", None) or getattr(cfg, "served_model_name", None)
                 if name:
@@ -69,7 +76,7 @@ class VLLMAdapter(ModelAdapter):
         if engine is None:
             return Measurement[str].unavailable("No vLLM engine bound.")
         try:
-            cfg = getattr(engine, "model_config", None)
+            cfg = self._model_config(engine)
             dtype = getattr(cfg, "dtype", None) if cfg else None
             if dtype:
                 return Measurement[str].available(
@@ -79,3 +86,14 @@ class VLLMAdapter(ModelAdapter):
             return Measurement[str].unavailable("vLLM dtype not exposed.")
         except Exception as exc:  # noqa: BLE001
             return Measurement[str].unavailable(str(exc))
+
+    @staticmethod
+    def _model_config(engine: Any) -> Any:
+        """Read model config from LLMEngine or EngineCore (vLLM ≥ 0.6)."""
+        cfg = getattr(engine, "model_config", None)
+        if cfg is not None:
+            return cfg
+        vllm_config = getattr(engine, "vllm_config", None)
+        if vllm_config is not None:
+            return getattr(vllm_config, "model_config", None)
+        return None

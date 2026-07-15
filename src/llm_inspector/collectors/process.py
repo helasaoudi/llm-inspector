@@ -18,7 +18,7 @@ from llm_inspector.utils import proc as proc_utils
 # Each entry: (RuntimeKind, list_of_regex_patterns).
 # Evaluated in order; first match wins.
 _RUNTIME_RULES: list[tuple[RuntimeKind, list[str]]] = [
-    (RuntimeKind.VLLM,          [r"\bvllm\b", r"vllm\.entrypoints"]),
+    (RuntimeKind.VLLM,          [r"\bvllm\b", r"vllm\.entrypoints", r"VLLM::EngineCore"]),
     (RuntimeKind.OLLAMA,        [r"\bollama\b"]),
     (RuntimeKind.TENSORRT,      [r"tritonserver", r"trtllm", r"tensorrt_llm"]),
     (RuntimeKind.SGLANG,        [r"\bsglang\b"]),
