@@ -56,9 +56,12 @@ class MemoryCollector(Collector[MemoryResult]):
                     source=f"NVML nvmlDeviceGetComputeRunningProcesses() — GPU {pid_procs[0].device_index}",
                 )
 
-        # PyTorch stats require plugin — unavailable in Phase 1
+        # GPU Allocated / Reserved / Peak require torch.cuda.memory_stats()
+        # which can only be called from inside the target process.
+        # External inspection via NVML only gives total VRAM used per process.
         unavail_torch = Measurement[int].unavailable(
-            "PyTorch memory stats require runtime plugin (Phase 2)."
+            "GPU allocated/reserved/peak require in-process PyTorch hooks. "
+            "Total GPU used is available via NVML above."
         )
 
         return MemoryResult(
