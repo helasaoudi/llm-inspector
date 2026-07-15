@@ -50,6 +50,22 @@ class ModelCollector(Collector[ModelResult]):
         hf_name = snap.hf_model_name
         weights_bytes = snap.total_weights_bytes
 
+        if not snap.maps_readable and not snap.fd_readable:
+            # /proc files unreadable — likely a different-user process
+            reason = (
+                f"Cannot read /proc/{ctx.process.pid}/maps (permission denied). "
+                "Try running llminspect with sudo for cross-user inspection."
+            )
+            return ModelResult(
+                name=Measurement[str].unavailable(reason),
+                architecture=Measurement[str].unavailable(reason),
+                parameter_count=Measurement[int].unavailable(reason),
+                precision=Measurement[str].unavailable(reason),
+                context_length=Measurement[int].unavailable(reason),
+                tensor_parallel=Measurement[int].unavailable(reason),
+                pipeline_parallel=Measurement[int].unavailable(reason),
+            )
+
         if hf_name or weights_bytes:
             name_meas: Measurement[str]
             if hf_name:
@@ -108,10 +124,15 @@ class ModelCollector(Collector[ModelResult]):
                 ),
             )
 
-        # 3. Nothing found anywhere
+        # 3. Nothing found anywhere — /proc was readable but no weight files present
+        #    This is common when model was loaded long ago: torch.load() reads
+        #    the file into GPU memory and closes the handle. After that, no
+        #    trace remains in /proc/maps or /proc/fd.
         reason = (
-            f"No model info available: {ctx.plugin.display_name} runtime exposes "
-            "no API, and no model weight files were found in /proc maps."
+            f"No model info available: {ctx.plugin.display_name} runtime exposes no API, "
+            "and no model weight files found in /proc maps or fd. "
+            "If the model was loaded >minutes ago, file handles may be closed — "
+            "the runtime must expose an API to identify it."
         )
         return ModelResult(
             name=Measurement[str].unavailable(reason),

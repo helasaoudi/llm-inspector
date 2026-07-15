@@ -59,7 +59,12 @@ class MemoryBreakdownCollector(Collector[MemoryBreakdownResult]):
         weights_path = snap.hf_model_path
 
         weights_meas: Measurement[int]
-        if weights_bytes:
+        if not snap.maps_readable and not snap.fd_readable:
+            weights_meas = Measurement[int].unavailable(
+                f"Cannot read /proc/{ctx.process.pid}/maps (permission denied). "
+                "Try running llminspect with sudo."
+            )
+        elif weights_bytes:
             source = (
                 f"/proc/{ctx.process.pid}/maps → {weights_path}"
                 if weights_path

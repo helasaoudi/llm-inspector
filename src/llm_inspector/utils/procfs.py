@@ -75,6 +75,14 @@ class ProcFSSnapshot:
     mapped_files: list[MappedFile] = field(default_factory=list)
     environ: dict[str, str] = field(default_factory=dict)
     open_files: list[str] = field(default_factory=list)
+    status: dict[str, str] = field(default_factory=dict)
+
+    # Whether /proc/<pid>/maps was readable (False = permission denied or absent)
+    maps_readable: bool = False
+    # Whether /proc/<pid>/fd was readable
+    fd_readable: bool = False
+    # Whether /proc/<pid>/environ was readable
+    environ_readable: bool = False
 
     # ── Derived properties ─────────────────────────────────────────────────
 
@@ -156,6 +164,10 @@ def snapshot(pid: int) -> ProcFSSnapshot:
 
     Safe to call on any OS — returns an empty snapshot on macOS or
     when the process is inaccessible.
+
+    Tracks readability flags (maps_readable, fd_readable, environ_readable)
+    so callers can distinguish "empty because permission denied" from
+    "empty because no model files found".
     """
     result = ProcFSSnapshot(pid=pid)
     base = Path(f"/proc/{pid}")
@@ -163,40 +175,51 @@ def snapshot(pid: int) -> ProcFSSnapshot:
     if not base.exists():
         return result  # macOS or inaccessible
 
-    result.mapped_files = _read_maps(base / "maps")
-    result.environ = _read_environ(base / "environ")
-    result.open_files = _read_fd_paths(base / "fd")
+    maps, maps_ok = _read_maps(base / "maps")
+    result.mapped_files = maps
+    result.maps_readable = maps_ok
+
+    result.status = _read_status(base / "status")
+
+    environ, environ_ok = _read_environ(base / "environ")
+    result.environ = environ
+    result.environ_readable = environ_ok
+
+    open_files, fd_ok = _read_fd_paths(base / "fd")
+    result.open_files = open_files
+    result.fd_readable = fd_ok
 
     return result
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _read_maps(maps_path: Path) -> list[MappedFile]:
+def _read_maps(maps_path: Path) -> tuple[list[MappedFile], bool]:
     """
     Parse /proc/<pid>/maps.
 
+    Returns (list_of_mapped_files, was_readable).
     Format:  address perms offset dev inode [pathname]
-    We care about entries with a pathname (memory-mapped files).
     """
     if not maps_path.exists():
-        return []
+        return [], False
 
-    # Accumulate total mapped size per file path (same file may appear many times)
     size_by_path: dict[str, int] = {}
 
     try:
         text = maps_path.read_text(errors="replace")
+    except PermissionError:
+        return [], False
     except OSError:
-        return []
+        return [], False
 
     for line in text.splitlines():
         parts = line.split()
         if len(parts) < 6:
-            continue  # anonymous mapping — no file path
+            continue
         path = parts[5]
         if not path or path.startswith("["):
-            continue  # [heap], [stack], [vdso], etc.
+            continue
 
         addr_range = parts[0]
         try:
@@ -219,17 +242,40 @@ def _read_maps(maps_path: Path) -> list[MappedFile]:
             is_library=is_lib,
         ))
 
+    return result, True
+
+
+def _read_status(status_path: Path) -> dict[str, str]:
+    """
+    Parse /proc/<pid>/status into a key→value dict.
+
+    Always readable (kernel allows it for any PID).
+    Useful fields: Name, Pid, VmRSS, VmPeak, VmSize, Threads.
+    """
+    if not status_path.exists():
+        return {}
+    try:
+        text = status_path.read_text(errors="replace")
+    except OSError:
+        return {}
+    result: dict[str, str] = {}
+    for line in text.splitlines():
+        if ":" in line:
+            key, _, val = line.partition(":")
+            result[key.strip()] = val.strip()
     return result
 
 
-def _read_environ(environ_path: Path) -> dict[str, str]:
-    """Parse /proc/<pid>/environ (null-separated KEY=VALUE pairs)."""
+def _read_environ(environ_path: Path) -> tuple[dict[str, str], bool]:
+    """Parse /proc/<pid>/environ. Returns (dict, was_readable)."""
     if not environ_path.exists():
-        return {}
+        return {}, False
     try:
         raw = environ_path.read_bytes()
+    except PermissionError:
+        return {}, False
     except OSError:
-        return {}
+        return {}, False
 
     env: dict[str, str] = {}
     for entry in raw.split(b"\x00"):
@@ -239,17 +285,17 @@ def _read_environ(environ_path: Path) -> dict[str, str]:
                 env[key.decode(errors="replace")] = val.decode(errors="replace")
             except Exception:  # noqa: BLE001
                 pass
-    return env
+    return env, True
 
 
-def _read_fd_paths(fd_dir: Path) -> list[str]:
+def _read_fd_paths(fd_dir: Path) -> tuple[list[str], bool]:
     """
-    Read symlinks in /proc/<pid>/fd to get open file paths.
+    Read symlinks in /proc/<pid>/fd. Returns (paths, was_readable).
 
     Ignores sockets, pipes, and other special fds.
     """
     if not fd_dir.exists():
-        return []
+        return [], False
     paths: list[str] = []
     try:
         for entry in fd_dir.iterdir():
@@ -259,6 +305,8 @@ def _read_fd_paths(fd_dir: Path) -> list[str]:
                     paths.append(target)
             except OSError:
                 pass
+    except PermissionError:
+        return [], False
     except OSError:
-        pass
-    return paths
+        return [], False
+    return paths, True
