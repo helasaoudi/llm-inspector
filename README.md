@@ -71,7 +71,7 @@ Ollama · vLLM · HuggingFace Transformers · macOS · Linux · NVIDIA DGX
 
 ## DGX / integration guide
 
-How to wire LLM Inspector into Docker inference services on NVIDIA DGX (external `llminspect` + embedded `attach()`, including the vLLM `general_plugins` pattern):
+How to wire LLM Inspector into Docker inference services on NVIDIA DGX (external `llminspect` + embedded `attach()`, including the vLLM `general_plugins` pattern and Phase 4 Activations / Workspace / Other):
 
 **[docs/DGX_GUIDE.md](docs/DGX_GUIDE.md)** — LLM Inspector Integration Guide
 

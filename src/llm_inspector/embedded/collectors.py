@@ -149,31 +149,60 @@ def collect_model_embedded(
 def collect_memory_breakdown_embedded(
     request: CollectorRequest,
     adapter_ctx: tuple[Any, AdapterContext] | None,
+    streaming: StreamingMetrics | None = None,
 ) -> dict[str, Any]:
-    """Snapshot weights / KV cache from the bound adapter (vLLM EngineCore)."""
+    """
+    Snapshot Weights / KV / Activations / Workspace / Other.
+
+    Phase 4 accounting (measured, not guessed):
+      - Weights / KV: adapter (model.parameters / kv_cache_tensors)
+      - Workspace: reserved − allocated (torch caching allocator)
+      - Activations: current (allocated − baseline) and peak watermark
+      - Other: allocated − weights − KV − current activations
+    """
     del request
+    streaming = streaming or StreamingMetrics()
 
     def _unavail(reason: str) -> Measurement[int]:
         return Measurement[int].unavailable(reason)
 
     if adapter_ctx is None:
         reason = "No model/engine bound — call attach(model=...) or attach(engine=...)."
+        # Still report Workspace from torch if CUDA is up (auto_attach case).
+        workspace, activations, other = _phase4_residuals(
+            weights=None, kv=None, streaming=streaming
+        )
         result = MemoryBreakdownResult(
             components=[
                 MemoryComponent(
-                    name=name,
+                    name=ComponentName.WEIGHTS,
                     measurement=_unavail(reason),
-                    order=COMPONENT_ORDER.get(name, 99),
-                )
-                for name in (
-                    ComponentName.WEIGHTS,
-                    ComponentName.KV_CACHE,
-                    ComponentName.ACTIVATIONS,
-                    ComponentName.WORKSPACE,
-                    ComponentName.OTHER,
-                )
+                    order=COMPONENT_ORDER[ComponentName.WEIGHTS],
+                ),
+                MemoryComponent(
+                    name=ComponentName.KV_CACHE,
+                    measurement=_unavail(reason),
+                    order=COMPONENT_ORDER[ComponentName.KV_CACHE],
+                ),
+                MemoryComponent(
+                    name=ComponentName.ACTIVATIONS,
+                    measurement=activations,
+                    order=COMPONENT_ORDER[ComponentName.ACTIVATIONS],
+                ),
+                MemoryComponent(
+                    name=ComponentName.WORKSPACE,
+                    measurement=workspace,
+                    order=COMPONENT_ORDER[ComponentName.WORKSPACE],
+                ),
+                MemoryComponent(
+                    name=ComponentName.OTHER,
+                    measurement=other if other.is_available else _unavail(reason),
+                    order=COMPONENT_ORDER[ComponentName.OTHER],
+                ),
             ],
-            total=_unavail(reason),
+            total=_sum_total(
+                [activations, workspace, other]
+            ),
         )
         return model_to_dict(result)
 
@@ -193,6 +222,12 @@ def collect_memory_breakdown_embedded(
         else _unavail("KV cache not exposed by adapter.")
     )
 
+    workspace, activations, other = _phase4_residuals(
+        weights=weights if weights.is_available else None,
+        kv=kv if kv.is_available else None,
+        streaming=streaming,
+    )
+
     components = [
         MemoryComponent(
             name=ComponentName.WEIGHTS,
@@ -208,34 +243,111 @@ def collect_memory_breakdown_embedded(
         ),
         MemoryComponent(
             name=ComponentName.ACTIVATIONS,
-            measurement=_unavail(
-                "Activations are transient — require forward-hook tracing (future release)."
-            ),
+            measurement=activations,
+            description="Transient activation memory above attach baseline (peak watermark).",
             order=COMPONENT_ORDER[ComponentName.ACTIVATIONS],
         ),
         MemoryComponent(
             name=ComponentName.WORKSPACE,
-            measurement=_unavail("Workspace buffers not exposed by adapter."),
+            measurement=workspace,
+            description="Torch caching-allocator pool (reserved − allocated).",
             order=COMPONENT_ORDER[ComponentName.WORKSPACE],
         ),
         MemoryComponent(
             name=ComponentName.OTHER,
-            measurement=_unavail("Other GPU memory not attributable by adapter."),
+            measurement=other,
+            description="Allocated bytes not explained by weights, KV, or activations.",
             order=COMPONENT_ORDER[ComponentName.OTHER],
         ),
     ]
 
-    measured = [
-        c.measurement.value
-        for c in components
-        if c.measurement.is_available and c.measurement.value is not None
-    ]
-    total = (
-        Measurement[int].available(
-            sum(measured),
-            source="Sum of measured embedded breakdown components",
+    return model_to_dict(
+        MemoryBreakdownResult(
+            components=components,
+            total=_sum_total([c.measurement for c in components]),
         )
-        if measured
-        else _unavail("No breakdown components measurable from adapter.")
     )
-    return model_to_dict(MemoryBreakdownResult(components=components, total=total))
+
+
+def _phase4_residuals(
+    *,
+    weights: Measurement[int] | None,
+    kv: Measurement[int] | None,
+    streaming: StreamingMetrics,
+) -> tuple[Measurement[int], Measurement[int], Measurement[int]]:
+    """Compute Workspace, Activations, Other from torch + streaming baseline."""
+    if not _torch_available():
+        unavail = Measurement[int].unavailable(
+            "CUDA not available or torch not installed."
+        )
+        return unavail, unavail, unavail
+
+    import torch  # noqa: PLC0415
+
+    allocated = int(torch.cuda.memory_allocated())
+    reserved = int(torch.cuda.memory_reserved())
+    streaming.record_allocated(allocated)
+    streaming.record_reserved(reserved)
+
+    workspace = Measurement[int].available(
+        max(0, reserved - allocated),
+        source="torch.cuda.memory_reserved() − memory_allocated()",
+    )
+
+    # Activations: current transient above attach baseline (0 when idle).
+    # Peak since attach is noted in the source string for capacity planning.
+    if streaming.baseline_allocated_bytes is not None:
+        current_act = streaming.current_activation_bytes(allocated)
+        peak_act = max(streaming.peak_activation_bytes, current_act)
+        source = (
+            "allocated − attach baseline "
+            f"(current; peak since attach: {peak_act}"
+        )
+        if streaming.activation_hooks_enabled:
+            source += "; forward hooks enabled"
+        source += ")"
+        activations = Measurement[int].available(current_act, source=source)
+        act_for_residual = current_act
+    else:
+        activations = Measurement[int].unavailable(
+            "Activation baseline not set — attach() after model load to enable."
+        )
+        act_for_residual = 0
+
+    w_val = weights.value if weights is not None and weights.is_available else None
+    kv_val = kv.value if kv is not None and kv.is_available else None
+
+    if w_val is not None and kv_val is not None:
+        other_val = max(0, allocated - int(w_val) - int(kv_val) - act_for_residual)
+        other = Measurement[int].available(
+            other_val,
+            source=(
+                "torch.cuda.memory_allocated() − weights − KV − current activations"
+            ),
+        )
+    elif w_val is not None:
+        other_val = max(0, allocated - int(w_val) - act_for_residual)
+        other = Measurement[int].available(
+            other_val,
+            source="torch.cuda.memory_allocated() − weights − current activations",
+        )
+    else:
+        other = Measurement[int].unavailable(
+            "Other requires measured Weights (and preferably KV) from adapter."
+        )
+
+    return workspace, activations, other
+
+
+def _sum_total(measurements: list[Measurement[int]]) -> Measurement[int]:
+    measured = [
+        m.value for m in measurements if m.is_available and m.value is not None
+    ]
+    if not measured:
+        return Measurement[int].unavailable(
+            "No breakdown components measurable from adapter."
+        )
+    return Measurement[int].available(
+        sum(measured),
+        source="Sum of measured embedded breakdown components",
+    )

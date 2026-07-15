@@ -51,7 +51,7 @@ class VLLMPlugin(RuntimePlugin):
       ✓ KV cache usage (Prometheus /metrics)
       ✓ Runtime details: PagedAttention, scheduler, tensor-parallel
       ~ Weights: only if vLLM exposes the metric (newer builds)
-      ✗ Activations: Unavailable (Phase 4)
+      ~ Activations / Workspace / Other: via embedded attach (Phase 4)
     """
 
     kind = RuntimeKind.VLLM
@@ -205,22 +205,25 @@ class VLLMPlugin(RuntimePlugin):
             order=COMPONENT_ORDER[ComponentName.KV_CACHE],
         ))
 
-        # ── Activations ───────────────────────────────────────────────────────
-        components.append(MemoryComponent(
-            name=ComponentName.ACTIVATIONS,
-            measurement=Measurement[int].unavailable(
-                "vLLM does not expose activation memory via /metrics (Phase 4)."
+        # ── Activations / Workspace / Other ───────────────────────────────────
+        # Filled by embedded attach (Phase 4). External /metrics has no byte totals.
+        for name, reason in (
+            (
+                ComponentName.ACTIVATIONS,
+                "vLLM /metrics has no activation bytes — use embedded attach().",
             ),
-            order=COMPONENT_ORDER[ComponentName.ACTIVATIONS],
-        ))
-
-        # ── Workspace / Other ────────────────────────────────────────────────
-        for name in (ComponentName.WORKSPACE, ComponentName.OTHER):
+            (
+                ComponentName.WORKSPACE,
+                "vLLM /metrics has no workspace bytes — use embedded attach().",
+            ),
+            (
+                ComponentName.OTHER,
+                "vLLM /metrics has no residual breakdown — use embedded attach().",
+            ),
+        ):
             components.append(MemoryComponent(
                 name=name,
-                measurement=Measurement[int].unavailable(
-                    "Not exposed by vLLM /metrics."
-                ),
+                measurement=Measurement[int].unavailable(reason),
                 order=COMPONENT_ORDER[name],
             ))
 

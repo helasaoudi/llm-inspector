@@ -70,6 +70,15 @@ class TestStreamingMetrics:
         snap = m.snapshot()
         assert snap["peak_allocated_bytes"] == 2000
 
+    def test_activation_baseline(self):
+        m = StreamingMetrics()
+        m.set_baseline_allocated(1000)
+        m.record_allocated(1000)
+        m.record_allocated(1500)
+        snap = m.snapshot()
+        assert snap["baseline_allocated_bytes"] == 1000
+        assert snap["peak_activation_bytes"] == 500
+
 
 class TestEmbeddedMemoryCollector:
     def test_no_cuda_returns_unavailable(self):

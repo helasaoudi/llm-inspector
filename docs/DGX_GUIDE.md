@@ -255,7 +255,27 @@ stt-tts-service/
 | `VLLMAdapter` | `EngineCore` / `EngineCoreProc`, `vllm_config.model_config` |
 | Embedded model | Architecture, dtype, `max_model_len`, TP/PP |
 | Embedded memory | `model.parameters()` weights + `kv_cache_tensors` KV size |
+| Phase 4 breakdown | Workspace = reserved−allocated; Activations = allocated−baseline; Other = residual |
 | Collectors | Merge embedded + API so one source fills gaps |
+
+### Phase 4 memory breakdown (embedded)
+
+With `attach()` after model load:
+
+| Component | How it is measured |
+|-----------|-------------------|
+| Weights | `model.parameters()` byte sum |
+| KV Cache | `kv_cache_tensors` sizes (vLLM) |
+| Activations | `allocated − attach baseline` (0 when idle; peak noted in `--verbose` source) |
+| Workspace | `memory_reserved() − memory_allocated()` |
+| Other | `allocated − weights − KV − current activations` |
+
+Optional finer activation peaks:
+
+```python
+attach(engine=engine, trace_layers=True)
+# or: LLM_INSPECTOR_TRACE_LAYERS=1
+```
 
 ---
 
