@@ -37,14 +37,9 @@ class RuntimeCollector(Collector[RuntimeResult]):
 
         runtime_kind = ctx.process.runtime_kind
 
-        # Version — plugin first, fall back to backend compute runtime
+        # Version — plugin only. CUDA version is already shown in the
+        # Hardware section and must not leak here as "runtime version".
         version = ctx.plugin.get_version(ctx)
-        if not version.is_available:
-            cuda_v = ctx.backend.runtime_version()
-            if cuda_v:
-                version = Measurement[str].available(
-                    cuda_v, source="NVML nvmlSystemGetCudaDriverVersion()"
-                )
 
         # Plugin-specific details (PagedAttention, Scheduler, etc.)
         details = ctx.plugin.get_runtime_details(ctx)

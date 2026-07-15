@@ -14,6 +14,7 @@ class RuntimeKind(StrEnum):
     TENSORRT = "TensorRT-LLM"
     SGLANG = "SGLang"
     LLAMA_CPP = "llama.cpp"
+    FASTAPI = "FastAPI"
     UNKNOWN = "Unknown"
 
 

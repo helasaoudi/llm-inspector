@@ -24,6 +24,8 @@ _RUNTIME_RULES: list[tuple[RuntimeKind, list[str]]] = [
     (RuntimeKind.SGLANG,        [r"\bsglang\b"]),
     (RuntimeKind.LLAMA_CPP,     [r"llama[-_]server", r"llama[-_]cli", r"llama_cpp"]),
     (RuntimeKind.HUGGING_FACE,  [r"\btransformers\b", r"from_pretrained"]),
+    # uvicorn/FastAPI — custom inference API servers served via ASGI
+    (RuntimeKind.FASTAPI,       [r"\buvicorn\b", r"\bfastapi\b", r"\bgunicorn\b"]),
 ]
 
 _COMPILED_RULES: list[tuple[RuntimeKind, list[re.Pattern[str]]]] = [

@@ -111,13 +111,16 @@ def render_footer(console: Console) -> None:
     console.print()
 
 
-def render_process_section(report: InspectionReport, console: Console) -> None:
+def render_process_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     console.print(Rule("Process", style=_SECTION_STYLE, align="left"))
     t = _kv_table()
     t.add_row("PID", str(report.pid))
     t.add_row("Runtime", report.process.runtime_kind.value)
     t.add_row("Backend", report.hardware.backend.value)
-    cmd = truncate(report.process.cmdline_str, 55)
+    raw_cmd = report.process.cmdline_str or ""
+    cmd = raw_cmd if verbose else truncate(raw_cmd, 120)
     t.add_row("Command", cmd or "Unavailable")
     t.add_row("Started", fmt_uptime(report.process.uptime_seconds) + " ago"
               if report.process.uptime_seconds else "Unavailable")
@@ -349,7 +352,7 @@ def render_full_report(
     show_all = collect_filter == "all"
 
     if show_all or collect_filter == "process":
-        render_process_section(report, console)
+        render_process_section(report, console, verbose=verbose)
 
     if show_all or collect_filter == "hardware":
         render_hardware_section(report, console)
