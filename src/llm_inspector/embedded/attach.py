@@ -22,7 +22,11 @@ import threading
 from typing import Any
 
 from llm_inspector.embedded.adapters.registry import bind_context
-from llm_inspector.embedded.collectors import collect_memory_embedded, collect_model_embedded
+from llm_inspector.embedded.collectors import (
+    collect_memory_breakdown_embedded,
+    collect_memory_embedded,
+    collect_model_embedded,
+)
 from llm_inspector.embedded.streaming import StreamingMetrics
 from llm_inspector.rpc import CollectorRequest
 from llm_inspector.transport.unix import UnixSocketTransport
@@ -95,6 +99,9 @@ def attach(
         handlers = {
             "memory": lambda req: collect_memory_embedded(req, streaming),
             "model": lambda req: collect_model_embedded(req, adapter_ctx),
+            "memory-breakdown": lambda req: collect_memory_breakdown_embedded(
+                req, adapter_ctx
+            ),
         }
         transport.serve(handlers)
 

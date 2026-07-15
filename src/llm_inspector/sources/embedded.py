@@ -14,8 +14,8 @@ from llm_inspector.utils import procfs
 
 _log = logging.getLogger(__name__)
 
-# Collectors served by embedded runtime in v0.3
-_EMBEDDED_COLLECTORS = frozenset({"memory", "model"})
+# Collectors served by embedded runtime
+_EMBEDDED_COLLECTORS = frozenset({"memory", "model", "memory-breakdown"})
 
 
 class EmbeddedSource(Source):

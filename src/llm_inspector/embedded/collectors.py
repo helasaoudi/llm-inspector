@@ -5,10 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from llm_inspector.embedded.adapters.base import AdapterContext
-from llm_inspector.embedded.adapters.registry import bind_context
 from llm_inspector.embedded.streaming import StreamingMetrics
 from llm_inspector.models.measurement import Measurement
-from llm_inspector.models.results import MemoryResult, ModelResult
+from llm_inspector.models.results import (
+    COMPONENT_ORDER,
+    ComponentName,
+    MemoryBreakdownResult,
+    MemoryComponent,
+    MemoryResult,
+    ModelResult,
+)
 from llm_inspector.rpc import CollectorRequest
 from llm_inspector.serialization import model_to_dict
 
@@ -138,3 +144,98 @@ def collect_model_embedded(
         ),
     )
     return model_to_dict(result)
+
+
+def collect_memory_breakdown_embedded(
+    request: CollectorRequest,
+    adapter_ctx: tuple[Any, AdapterContext] | None,
+) -> dict[str, Any]:
+    """Snapshot weights / KV cache from the bound adapter (vLLM EngineCore)."""
+    del request
+
+    def _unavail(reason: str) -> Measurement[int]:
+        return Measurement[int].unavailable(reason)
+
+    if adapter_ctx is None:
+        reason = "No model/engine bound — call attach(model=...) or attach(engine=...)."
+        result = MemoryBreakdownResult(
+            components=[
+                MemoryComponent(
+                    name=name,
+                    measurement=_unavail(reason),
+                    order=COMPONENT_ORDER.get(name, 99),
+                )
+                for name in (
+                    ComponentName.WEIGHTS,
+                    ComponentName.KV_CACHE,
+                    ComponentName.ACTIVATIONS,
+                    ComponentName.WORKSPACE,
+                    ComponentName.OTHER,
+                )
+            ],
+            total=_unavail(reason),
+        )
+        return model_to_dict(result)
+
+    adapter, ctx = adapter_ctx
+
+    weights_fn = getattr(adapter, "weights_bytes", None)
+    weights = (
+        weights_fn(ctx)
+        if callable(weights_fn)
+        else _unavail("Weights not exposed by adapter.")
+    )
+
+    kv_fn = getattr(adapter, "kv_cache_bytes", None)
+    kv = (
+        kv_fn(ctx)
+        if callable(kv_fn)
+        else _unavail("KV cache not exposed by adapter.")
+    )
+
+    components = [
+        MemoryComponent(
+            name=ComponentName.WEIGHTS,
+            measurement=weights,
+            description="Model weight tensors loaded into GPU VRAM.",
+            order=COMPONENT_ORDER[ComponentName.WEIGHTS],
+        ),
+        MemoryComponent(
+            name=ComponentName.KV_CACHE,
+            measurement=kv,
+            description="PagedAttention KV cache blocks allocated in GPU VRAM.",
+            order=COMPONENT_ORDER[ComponentName.KV_CACHE],
+        ),
+        MemoryComponent(
+            name=ComponentName.ACTIVATIONS,
+            measurement=_unavail(
+                "Activations are transient — require forward-hook tracing (future release)."
+            ),
+            order=COMPONENT_ORDER[ComponentName.ACTIVATIONS],
+        ),
+        MemoryComponent(
+            name=ComponentName.WORKSPACE,
+            measurement=_unavail("Workspace buffers not exposed by adapter."),
+            order=COMPONENT_ORDER[ComponentName.WORKSPACE],
+        ),
+        MemoryComponent(
+            name=ComponentName.OTHER,
+            measurement=_unavail("Other GPU memory not attributable by adapter."),
+            order=COMPONENT_ORDER[ComponentName.OTHER],
+        ),
+    ]
+
+    measured = [
+        c.measurement.value
+        for c in components
+        if c.measurement.is_available and c.measurement.value is not None
+    ]
+    total = (
+        Measurement[int].available(
+            sum(measured),
+            source="Sum of measured embedded breakdown components",
+        )
+        if measured
+        else _unavail("No breakdown components measurable from adapter.")
+    )
+    return model_to_dict(MemoryBreakdownResult(components=components, total=total))
