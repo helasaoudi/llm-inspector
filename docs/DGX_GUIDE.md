@@ -1,8 +1,10 @@
-# LLM Inspector — DGX / Integration Guide
+# LLM Inspector — DGX notes
 
-**Goal:** Observe live GPU inference processes from outside (`llminspect`) or from inside (`attach()`), with every metric either **measured** or explicitly **Unavailable**.
+> **Looking for install on any GPU machine?** Start here: **[INSTALL_GUIDE.md](INSTALL_GUIDE.md)** (bare metal + Docker).
 
-This guide reflects how LLM Inspector was integrated into a DGX Spark inference stack (`stt-tts-service` + `vllm-server`).
+This document keeps **DGX Spark–specific** notes from integrating LLM Inspector into an inference stack (`stt-tts-service` + `vllm-server`). Same APIs as everywhere else; the differences are mostly Docker PID namespaces, GB10 NVML limits, and the vLLM EngineCore plugin.
+
+**Goal:** Observe live GPU inference from outside (`llminspect`) or inside (`attach()`), with every metric measured or explicitly `Unavailable`.
 
 ---
 

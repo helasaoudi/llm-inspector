@@ -8,7 +8,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20DGX-lightgrey)](#)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20GPU%20servers-lightgrey)](#)
 
 </div>
 
@@ -32,12 +32,18 @@ Every value is either measured from a live source or explicitly marked `Unavaila
 
 ## Install
 
+Works on **any NVIDIA GPU machine** — laptop, workstation, cloud VM, bare-metal server, or DGX. Docker is optional.
+
 ```bash
 git clone https://github.com/helasaoudi/llm-inspector
 cd llm-inspector
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[torch]"
 ```
+
+Full guide (host + Docker + `attach()` + vLLM plugin):
+
+**[docs/INSTALL_GUIDE.md](docs/INSTALL_GUIDE.md)**
 
 ## Try it
 
@@ -52,7 +58,7 @@ llminspect inspect <pid>
 llminspect inspect <pid> --verbose
 ```
 
-With Ollama running:
+With Ollama on the host (no Docker):
 
 ```bash
 ollama run llama3
@@ -65,15 +71,17 @@ llminspect inspect $(pgrep -f "ollama serve") --verbose
 
 ## Supports
 
-Ollama · vLLM · HuggingFace Transformers · macOS · Linux · NVIDIA DGX
+Ollama · vLLM · HuggingFace Transformers · FastAPI · custom PyTorch  
+macOS · Linux · any NVIDIA GPU server (including DGX)
 
 ---
 
-## DGX / integration guide
+## Documentation
 
-How to wire LLM Inspector into Docker inference services on NVIDIA DGX (external `llminspect` + embedded `attach()`, including the vLLM `general_plugins` pattern and Phase 4 Activations / Workspace / Other):
-
-**[docs/DGX_GUIDE.md](docs/DGX_GUIDE.md)** — LLM Inspector Integration Guide
+| Guide | When to read it |
+|-------|-----------------|
+| **[Install & Integration](docs/INSTALL_GUIDE.md)** | Install on a simple server or in Docker; external vs embedded |
+| [DGX notes](docs/DGX_GUIDE.md) | Extra detail from a DGX Spark inference-service setup |
 
 ---
 
