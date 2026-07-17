@@ -26,7 +26,7 @@ Unlike traditional monitoring tools, it doesn't stop at inspection. It also anal
 
 <div align="center">
 
-![LLM Inspector demo](docs/assets/llm-inspector-demo.gif)
+![LLM Inspector demo](https://raw.githubusercontent.com/helasaoudi/llm-inspector/main/docs/assets/llm-inspector-demo.gif)
 
 </div>
 
@@ -99,6 +99,18 @@ llminspect inspect <pid> --verbose   # show provenance for every field
 ## Install
 
 Works on any NVIDIA GPU machine — laptop, workstation, cloud VM, bare-metal server, or DGX. Docker is optional.
+
+```bash
+pip install llm-inspector
+```
+
+For embedded deep metrics (Weights / KV / Activations) in the same Python env as the model:
+
+```bash
+pip install "llm-inspector[torch]"
+```
+
+From source (contributors):
 
 ```bash
 git clone https://github.com/helasaoudi/llm-inspector

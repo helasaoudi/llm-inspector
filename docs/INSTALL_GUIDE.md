@@ -46,7 +46,15 @@ Start with external. Add embedded when you need “where did my VRAM go?” beyo
 
 Use this on a normal GPU server or workstation.
 
-### From source (recommended while private / not on PyPI)
+### From PyPI (recommended)
+
+```bash
+pip install llm-inspector
+# or, for embedded deep metrics in the model env:
+pip install "llm-inspector[torch]"
+```
+
+### From source (contributors / unreleased changes)
 
 ```bash
 git clone https://github.com/helasaoudi/llm-inspector.git
