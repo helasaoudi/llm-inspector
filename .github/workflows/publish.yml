@@ -15,6 +15,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/llm-inspector
     permissions:
+      contents: read # required: job permissions replace workflow defaults
       id-token: write # Trusted Publishing (OIDC) — no API token in GitHub secrets
 
     steps:
