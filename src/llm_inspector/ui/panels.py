@@ -237,6 +237,67 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
     console.print(t)
     console.print()
 
+    # Phase 5 — tokenizer / architecture / module buckets
+    t2 = _kv_table()
+    has_details = False
+
+    def detail_str(label: str, meas: Measurement[str]) -> None:
+        nonlocal has_details
+        if not meas.is_available and not verbose:
+            return
+        has_details = True
+        val_str = (
+            str(meas.value)
+            if meas.is_available and meas.value is not None
+            else "Unavailable"
+        )
+        if verbose and meas.is_available and meas.source:
+            t2.add_row(label, _source(val_str, meas.source))
+        elif verbose and not meas.is_available and meas.reason:
+            t2.add_row(label, _reason(meas.reason))
+        elif meas.is_available:
+            t2.add_row(label, _val(val_str))
+
+    def detail_int(label: str, meas: Measurement[int], formatter=str) -> None:
+        nonlocal has_details
+        if not meas.is_available and not verbose:
+            return
+        has_details = True
+        if meas.is_available and meas.value is not None:
+            val_str = formatter(meas.value)
+            if verbose and meas.source:
+                t2.add_row(label, _source(val_str, meas.source))
+            else:
+                t2.add_row(label, _val(val_str))
+        elif verbose and meas.reason:
+            t2.add_row(label, _reason(meas.reason))
+
+    def fmt_params(n: int) -> str:
+        if n >= 1_000_000_000:
+            return f"{n / 1e9:.2f}B"
+        if n >= 1_000_000:
+            return f"{n / 1e6:.1f}M"
+        return f"{n:,}"
+
+    detail_str("Tokenizer", m.tokenizer_class)
+    detail_int("Vocab Size", m.vocab_size, lambda n: f"{n:,}")
+    detail_str("Chat Template", m.chat_template)
+    detail_str("BOS Token", m.bos_token)
+    detail_str("EOS Token", m.eos_token)
+    detail_int("Layers", m.num_layers, lambda n: f"{n:,}")
+    detail_int("Hidden Size", m.hidden_size, lambda n: f"{n:,}")
+    detail_int("Attention Heads", m.num_attention_heads, lambda n: f"{n:,}")
+    detail_int("KV Heads", m.num_kv_heads, lambda n: f"{n:,}")
+    detail_int("Experts (MoE)", m.num_experts, lambda n: f"{n:,}")
+    detail_int("Embed Params", m.embed_params, fmt_params)
+    detail_int("Transformer Params", m.transformer_params, fmt_params)
+    detail_int("Head Params", m.head_params, fmt_params)
+
+    if has_details:
+        console.print(Rule("Model Details", style=_SECTION_STYLE, align="left"))
+        console.print(t2)
+        console.print()
+
 
 def render_memory_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
     from llm_inspector.models.enums import BackendKind  # noqa: PLC0415

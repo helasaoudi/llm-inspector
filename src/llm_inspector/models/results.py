@@ -180,6 +180,49 @@ class ModelResult(BaseModel):
         default_factory=lambda: Measurement.unavailable("Not collected"),
     )
 
+    # Phase 5 — tokenizer / architecture / module breakdown
+    tokenizer_class: Measurement[str] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    vocab_size: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    chat_template: Measurement[str] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+        description="Whether tokenizer.chat_template is present (yes/no).",
+    )
+    bos_token: Measurement[str] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    eos_token: Measurement[str] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    num_layers: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    hidden_size: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    num_attention_heads: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    num_kv_heads: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    num_experts: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+        description="MoE expert count when present on config.",
+    )
+    embed_params: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    transformer_params: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    head_params: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+
 
 class MemoryComponent(BaseModel):
     """

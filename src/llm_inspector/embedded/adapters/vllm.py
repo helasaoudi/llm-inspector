@@ -213,6 +213,18 @@ class VLLMAdapter(ModelAdapter):
         except Exception as exc:  # noqa: BLE001
             return Measurement[int].unavailable(str(exc))
 
+    def model_details(self, ctx: AdapterContext) -> dict[str, Measurement]:
+        """Tokenizer + architecture config + module param buckets."""
+        from llm_inspector.embedded.model_details import (  # noqa: PLC0415
+            collect_model_detail_fields,
+        )
+
+        return collect_model_detail_fields(
+            engine=ctx.engine,
+            model=ctx.model,
+            resolve_model=self._resolve_model,
+        )
+
     def kv_cache_bytes(self, ctx: AdapterContext) -> Measurement[int]:
         engine = ctx.engine
         if engine is None:

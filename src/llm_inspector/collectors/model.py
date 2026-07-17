@@ -35,21 +35,19 @@ def merge_model_results(
     if secondary is None:
         return primary
 
-    def _pick(
-        first: Measurement[str] | Measurement[int],
-        second: Measurement[str] | Measurement[int],
-    ) -> Measurement[str] | Measurement[int]:
-        return first if first.is_available else second
+    kwargs: dict = {}
+    for field_name in ModelResult.model_fields:
+        first = getattr(primary, field_name)
+        second = getattr(secondary, field_name)
+        kwargs[field_name] = first if first.is_available else second
+    return ModelResult(**kwargs)
 
-    return ModelResult(
-        name=_pick(primary.name, secondary.name),  # type: ignore[arg-type]
-        architecture=_pick(primary.architecture, secondary.architecture),  # type: ignore[arg-type]
-        parameter_count=_pick(primary.parameter_count, secondary.parameter_count),  # type: ignore[arg-type]
-        precision=_pick(primary.precision, secondary.precision),  # type: ignore[arg-type]
-        context_length=_pick(primary.context_length, secondary.context_length),  # type: ignore[arg-type]
-        tensor_parallel=_pick(primary.tensor_parallel, secondary.tensor_parallel),  # type: ignore[arg-type]
-        pipeline_parallel=_pick(primary.pipeline_parallel, secondary.pipeline_parallel),  # type: ignore[arg-type]
-    )
+
+def _all_unavailable(reason: str) -> ModelResult:
+    kwargs = {
+        name: Measurement.unavailable(reason) for name in ModelResult.model_fields
+    }
+    return ModelResult(**kwargs)
 
 
 class ModelCollector(Collector[ModelResult]):
@@ -85,15 +83,11 @@ class ModelCollector(Collector[ModelResult]):
             return api_result
 
         # 3. /proc/<pid> inspection — works for any process on Linux.
-        #    Model name can come from either:
-        #      a) memory-mapped weight files (HuggingFace cache path), or
-        #      b) environment variables (MODEL_NAME, WHISPER_MODEL, etc.)
         snap = procfs.snapshot(ctx.process.pid)
         hf_name = snap.hf_model_name
         weights_bytes = snap.total_weights_bytes
         env_model = snap.model_from_env  # (name, env_var) or None
 
-        # Only treat as permission error if we could read *nothing* at all.
         if (
             not snap.maps_readable
             and not snap.fd_readable
@@ -104,19 +98,9 @@ class ModelCollector(Collector[ModelResult]):
                 "Try running with: sudo $(which llminspect) inspect "
                 f"{ctx.process.pid}"
             )
-            return ModelResult(
-                name=Measurement[str].unavailable(reason),
-                architecture=Measurement[str].unavailable(reason),
-                parameter_count=Measurement[int].unavailable(reason),
-                precision=Measurement[str].unavailable(reason),
-                context_length=Measurement[int].unavailable(reason),
-                tensor_parallel=Measurement[int].unavailable(reason),
-                pipeline_parallel=Measurement[int].unavailable(reason),
-            )
+            return _all_unavailable(reason)
 
         if hf_name or weights_bytes or env_model:
-            # Model name — prefer HF cache path, then env var
-            name_meas: Measurement[str]
             if hf_name:
                 name_meas = Measurement[str].available(
                     hf_name,
@@ -134,11 +118,6 @@ class ModelCollector(Collector[ModelResult]):
                     "cache path pattern or model env var detected."
                 )
 
-            param_meas = Measurement[int].unavailable(
-                "Parameter count requires runtime API. "
-                "See Memory Breakdown → Weights for raw mapped size."
-            )
-
             frameworks = snap.detected_frameworks
             arch_meas = (
                 Measurement[str].available(
@@ -151,40 +130,27 @@ class ModelCollector(Collector[ModelResult]):
                 )
             )
 
-            return ModelResult(
-                name=name_meas,
-                architecture=arch_meas,
-                precision=Measurement[str].unavailable(
-                    "Precision not detectable from /proc — requires runtime API."
-                ),
-                parameter_count=param_meas,
-                context_length=Measurement[int].unavailable(
-                    "Context length not detectable from /proc — requires runtime API."
-                ),
-                tensor_parallel=Measurement[int].unavailable(
-                    "Tensor parallel not detectable from /proc — requires runtime API."
-                ),
-                pipeline_parallel=Measurement[int].unavailable(
-                    "Pipeline parallel not detectable from /proc — requires runtime API."
-                ),
+            result = _all_unavailable(
+                "Requires embedded attach() or runtime API for tokenizer/config details."
+            )
+            return result.model_copy(
+                update={
+                    "name": name_meas,
+                    "architecture": arch_meas,
+                    "parameter_count": Measurement[int].unavailable(
+                        "Parameter count requires runtime API. "
+                        "See Memory Breakdown → Weights for raw mapped size."
+                    ),
+                    "precision": Measurement[str].unavailable(
+                        "Precision not detectable from /proc — requires runtime API."
+                    ),
+                }
             )
 
-        # 3. Nothing found anywhere — /proc was readable but no weight files present
-        #    This is common when model was loaded long ago: torch.load() reads
-        #    the file into GPU memory and closes the handle. After that, no
-        #    trace remains in /proc/maps or /proc/fd.
         reason = (
             f"No model info available: {ctx.plugin.display_name} runtime exposes no API, "
             "and no model weight files found in /proc maps or fd. "
             "If the model was loaded >minutes ago, file handles may be closed — "
             "the runtime must expose an API to identify it."
         )
-        return ModelResult(
-            name=Measurement[str].unavailable(reason),
-            architecture=Measurement[str].unavailable(reason),
-            parameter_count=Measurement[int].unavailable(reason),
-            precision=Measurement[str].unavailable(reason),
-            context_length=Measurement[int].unavailable(reason),
-            tensor_parallel=Measurement[int].unavailable(reason),
-            pipeline_parallel=Measurement[int].unavailable(reason),
-        )
+        return _all_unavailable(reason)

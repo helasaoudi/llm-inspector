@@ -103,7 +103,8 @@ def collect_model_embedded(
     request: CollectorRequest,
     adapter_ctx: tuple[Any, AdapterContext] | None,
 ) -> dict[str, Any]:
-    """Snapshot model identity from bound adapter."""
+    """Snapshot model identity + tokenizer/architecture details from adapter."""
+    del request
     if adapter_ctx is None:
         result = ModelResult(
             name=Measurement[str].unavailable("No model bound — call attach(model=...)."),
@@ -125,6 +126,22 @@ def collect_model_embedded(
             return fn(ctx)
         return Measurement[int].unavailable(fallback)
 
+    # Phase 5 details — prefer adapter methods, else shared extractors
+    detail_fn = getattr(adapter, "model_details", None)
+    if callable(detail_fn):
+        details = detail_fn(ctx)
+    else:
+        from llm_inspector.embedded.model_details import (  # noqa: PLC0415
+            collect_model_detail_fields,
+        )
+
+        resolve = getattr(adapter, "_resolve_model", None)
+        details = collect_model_detail_fields(
+            engine=ctx.engine,
+            model=ctx.model,
+            resolve_model=resolve if callable(resolve) else None,
+        )
+
     result = ModelResult(
         name=name,
         architecture=architecture,
@@ -141,6 +158,58 @@ def collect_model_embedded(
         pipeline_parallel=_optional_int(
             "pipeline_parallel",
             "Pipeline parallel requires runtime-specific adapter extension.",
+        ),
+        tokenizer_class=details.get(
+            "tokenizer_class",
+            Measurement[str].unavailable("Tokenizer not exposed by adapter."),
+        ),
+        vocab_size=details.get(
+            "vocab_size",
+            Measurement[int].unavailable("Vocab size not exposed by adapter."),
+        ),
+        chat_template=details.get(
+            "chat_template",
+            Measurement[str].unavailable("Chat template not exposed by adapter."),
+        ),
+        bos_token=details.get(
+            "bos_token",
+            Measurement[str].unavailable("BOS token not exposed by adapter."),
+        ),
+        eos_token=details.get(
+            "eos_token",
+            Measurement[str].unavailable("EOS token not exposed by adapter."),
+        ),
+        num_layers=details.get(
+            "num_layers",
+            Measurement[int].unavailable("num_layers not exposed by adapter."),
+        ),
+        hidden_size=details.get(
+            "hidden_size",
+            Measurement[int].unavailable("hidden_size not exposed by adapter."),
+        ),
+        num_attention_heads=details.get(
+            "num_attention_heads",
+            Measurement[int].unavailable("num_attention_heads not exposed by adapter."),
+        ),
+        num_kv_heads=details.get(
+            "num_kv_heads",
+            Measurement[int].unavailable("num_kv_heads not exposed by adapter."),
+        ),
+        num_experts=details.get(
+            "num_experts",
+            Measurement[int].unavailable("num_experts not exposed by adapter."),
+        ),
+        embed_params=details.get(
+            "embed_params",
+            Measurement[int].unavailable("embed_params not exposed by adapter."),
+        ),
+        transformer_params=details.get(
+            "transformer_params",
+            Measurement[int].unavailable("transformer_params not exposed by adapter."),
+        ),
+        head_params=details.get(
+            "head_params",
+            Measurement[int].unavailable("head_params not exposed by adapter."),
         ),
     )
     return model_to_dict(result)

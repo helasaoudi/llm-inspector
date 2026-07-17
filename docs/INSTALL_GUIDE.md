@@ -36,7 +36,7 @@ macOS: external inspect works for CPU/Metal runtimes like Ollama; NVML GPU field
 | Level | Code changes | What you get |
 |-------|--------------|--------------|
 | **External** | None | GPU VRAM (NVML), process info, runtime plugin data (Ollama/vLLM APIs) |
-| **Embedded** | One `attach()` after model load | GPU Allocated / Reserved / Peak, Weights / KV / Activations / Workspace / Other |
+| **Embedded** | One `attach()` after model load | GPU Allocated / Reserved / Peak, Weights / KV / Activations / Workspace / Other, tokenizer + architecture details |
 
 Start with external. Add embedded when you need “where did my VRAM go?” beyond NVML totals.
 
@@ -272,6 +272,17 @@ Gives Allocated / Reserved / Peak via `torch.cuda.*`, not full Weights/KV from t
 | Activations | Transient; **0 when idle** (expected) |
 | Workspace | `reserved − allocated` |
 | Other | Residual allocated not explained above |
+
+### Phase 5 model details (with `attach` after load)
+
+Extra **Model Details** section when the engine/model exposes them:
+
+| Field | Source |
+|-------|--------|
+| Tokenizer / vocab / BOS / EOS / chat template | Bound tokenizer (or `hf_config.vocab_size`) |
+| Layers, hidden size, attention heads, KV heads | `hf_config` |
+| Experts (MoE) | `hf_config.num_experts` when present |
+| Embed / Transformer / Head params | `named_parameters()` name buckets |
 
 ---
 
