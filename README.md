@@ -24,68 +24,11 @@ Unlike traditional monitoring tools, it doesn't stop at inspection. It also anal
 
 ## Example
 
-```text
-═════════════════════════════ LLM INSPECTOR v0.6.0 ═════════════════════════════
+<div align="center">
 
-Process ────────────────────────────────────────────────────────────────────────
-PID                   3634048
-Runtime               vLLM
-Command               VLLM::EngineCore
+![LLM Inspector demo](docs/assets/llm-inspector-demo.gif)
 
-Hardware ───────────────────────────────────────────────────────────────────────
-GPU                   NVIDIA GeForce RTX 3080 Ti
-VRAM Total            12.0 GB
-VRAM Used             6.3 GB
-
-Model ──────────────────────────────────────────────────────────────────────────
-Name                  Benchmaxx-Llama-3.2-1B
-Architecture          LlamaForCausalLM
-Precision             torch.bfloat16
-Parameters            1.2B
-Context Length        2,048 tokens
-
-Model Details ──────────────────────────────────────────────────────────────────
-Vocab Size            128,256
-Layers                16
-Hidden Size           2,048
-Attention Heads       32
-KV Heads              8
-
-Memory ─────────────────────────────────────────────────────────────────────────
-GPU Used              6.3 GB
-GPU Allocated         5.5 GB
-GPU Reserved          5.8 GB
-Peak GPU              5.7 GB
-
-Memory Breakdown ───────────────────────────────────────────────────────────────
-Weights               2.3 GB
-KV Cache              2.9 GB
-Activations           0 B
-Workspace             353 MB
-Other                 223 MB
-────────────────────────────────────────────────────────────────────────────────
-Total                 5.8 GB
-
-Runtime Details ────────────────────────────────────────────────────────────────
-Runtime               vLLM
-PagedAttention        Enabled
-
-Optimization Analysis (Projected) ──────────────────────────────────────────────
-  Quantization
-  Method              New Total       Saved
-  FP8                 4.7 GB          1.1 GB
-  INT8                4.7 GB          1.1 GB
-  AWQ 4-bit           4.2 GB          1.6 GB
-  GPTQ 4-bit          4.1 GB          1.7 GB
-
-  Recommendation
-  ✓ GPTQ 4-bit is the best trade-off (saves 1.7 GB, typical quality: Good).
-  ⚠ Your largest memory consumer is KV Cache (50% of measured breakdown).
-    Weight quantization alone may not remove the bottleneck.
-
-────────────────────────────────────────────────────────────────────────────────
-Measured. Not guessed.
-```
+</div>
 
 ---
 
