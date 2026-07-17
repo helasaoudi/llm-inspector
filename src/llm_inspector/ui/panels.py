@@ -395,6 +395,73 @@ def render_runtime_section(report: InspectionReport, console: Console, verbose: 
     console.print()
 
 
+def render_optimization_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
+    """Render Optimization Analysis (Projected) — continuation of inspect."""
+    from llm_inspector.ui.format import fmt_projected_bytes  # noqa: PLC0415
+
+    opt = report.optimization
+    console.print(
+        Rule("Optimization Analysis (Projected)", style=_SECTION_STYLE, align="left")
+    )
+
+    if opt is None:
+        console.print(
+            "[dim]  Optimization Analysis unavailable "
+            "(insufficient measured data).[/dim]"
+        )
+        console.print()
+        return
+
+    if opt.skipped_reason:
+        console.print(f"[dim]  {opt.skipped_reason}[/dim]")
+        console.print()
+        return
+
+    for group in opt.groups:
+        console.print(f"  [bold]{group.title}[/bold]")
+        if group.note:
+            console.print(f"  [dim]{group.note}[/dim]")
+
+        t = Table(box=None, show_header=True, padding=(0, 2))
+        t.add_column("Method", style="bold", min_width=16)
+        t.add_column("New Total", min_width=12)
+        t.add_column("Saved", min_width=12)
+        if verbose:
+            t.add_column("Quality", min_width=12)
+            t.add_column("Source", style="dim")
+
+        for s in group.scenarios:
+            total_s = fmt_projected_bytes(s.new_total)
+            saved_s = fmt_projected_bytes(s.saved_bytes)
+            if verbose:
+                src = s.new_total.source or s.new_total.reason or ""
+                t.add_row(
+                    s.method_name,
+                    total_s,
+                    saved_s,
+                    s.quality.value,
+                    src,
+                )
+            else:
+                # Hide unsupported/unavailable rows in compact view
+                if not s.new_total.has_value:
+                    continue
+                t.add_row(s.method_name, total_s, saved_s)
+
+        console.print(t)
+        console.print()
+
+    if opt.recommendation is not None:
+        rec = opt.recommendation
+        console.print("  [bold]Recommendation[/bold]")
+        console.print(f"  ✓ {rec.summary}")
+        for warning in rec.warnings:
+            console.print(f"  ⚠ {warning}")
+        console.print()
+
+
 def render_full_report(
     report: InspectionReport,
     console: Console,
@@ -429,5 +496,9 @@ def render_full_report(
 
     if show_all or collect_filter == "runtime":
         render_runtime_section(report, console, verbose=verbose)
+
+    # Continuation: projected optimizations (not a separate command)
+    if show_all:
+        render_optimization_section(report, console, verbose=verbose)
 
     render_footer(console)

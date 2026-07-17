@@ -24,8 +24,15 @@ def fmt_bytes(b: int | None) -> str:
 
 
 def fmt_measurement_bytes(m: Measurement[int]) -> str:
-    """Format a Measurement[int] (bytes) as a human string or 'Unavailable'."""
+    """Format a measured Measurement[int] (bytes) or 'Unavailable'."""
     if not m.is_available or m.value is None:
+        return "Unavailable"
+    return fmt_bytes(m.value)
+
+
+def fmt_projected_bytes(m: Measurement[int]) -> str:
+    """Format measured or simulated bytes for Optimization Analysis."""
+    if not m.has_value or m.value is None:
         return "Unavailable"
     return fmt_bytes(m.value)
 

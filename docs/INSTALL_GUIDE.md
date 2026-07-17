@@ -284,6 +284,17 @@ Extra **Model Details** section when the engine/model exposes them:
 | Experts (MoE) | `hf_config.num_experts` when present |
 | Embed / Transformer / Head params | `named_parameters()` name buckets |
 
+### Phase 6 Optimization Analysis (Projected)
+
+After the measured sections, `llminspect inspect <pid>` continues with
+**Optimization Analysis (Projected)** — currently Quantization scenarios
+(FP8, INT8, AWQ/GPTQ 4-bit, …).
+
+- Current memory stays **Measured**
+- New totals are **Projected** (weight memory simulated; KV/Workspace/Other pass through)
+- Recommendations call out bottlenecks (e.g. KV Cache dominance)
+- Never modifies the model
+
 ---
 
 ## 5. vLLM serve plugin pattern

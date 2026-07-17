@@ -1,29 +1,15 @@
 """
-Measurement[T] — the provenance-aware value type used by all Phase B collectors.
+Measurement[T] — the provenance-aware value type used by Phase B collectors
+and optimization projections.
 
 Philosophy
 ----------
-Every value displayed by LLM Inspector was either measured directly from the
-runtime or declared unavailable.  There is no third option.
+Inspection values are either **measured** (AVAILABLE) or UNAVAILABLE.
 
-``DataSource.ESTIMATED`` does not exist in this codebase.  This is not an
-oversight — it is an architectural guarantee.
-
-Usage
------
-::
-
-    # Collector found the value:
-    m = Measurement.available(17_000_000_000, source="torch.named_parameters()")
-
-    # Runtime does not expose this:
-    m = Measurement.unavailable("vLLM does not expose activation memory.")
-
-    # Reading the value safely:
-    if m.is_available:
-        print(f"{m.value / 1e9:.1f} GB")
-    else:
-        print("Unavailable")
+Optimization Analysis may attach **SIMULATED** projections.  Those never
+appear as measured facts in Process / Hardware / Model / Memory sections.
+``ESTIMATED`` (guessing without a formula tied to measured inputs) does
+not exist.
 """
 
 from __future__ import annotations
@@ -38,28 +24,27 @@ T = TypeVar("T")
 
 class MeasurementStatus(StrEnum):
     """
-    The provenance status of a single observed value.
+    Provenance status of a single value.
 
-    ``ESTIMATED`` is deliberately absent — LLM Inspector never estimates.
+    - AVAILABLE:  measured from a live source
+    - UNAVAILABLE: not exposed / not measurable
+    - SIMULATED:  projected by Optimization Analysis from measured inputs
     """
 
     AVAILABLE = "available"
     UNAVAILABLE = "unavailable"
+    SIMULATED = "simulated"
 
 
 class Measurement(BaseModel, Generic[T]):
     """
-    A single observed value with full provenance.
+    A single value with full provenance.
 
     Attributes:
-        value:  The measured value, or ``None`` when status is UNAVAILABLE.
-        status: Whether the value was successfully measured.
-        source: Human-readable description of the data origin.
-                E.g. ``"NVML nvmlDeviceGetMemoryInfo()"`` or
-                ``"vLLM /metrics endpoint"``.
-                Always set when status is AVAILABLE.
-        reason: Why the value is unavailable.
-                Always set when status is UNAVAILABLE.
+        value:  The value, or ``None`` when status is UNAVAILABLE.
+        status: Provenance kind.
+        source: Origin (measured API) or projection formula (simulated).
+        reason: Why unavailable (UNAVAILABLE only).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -69,21 +54,36 @@ class Measurement(BaseModel, Generic[T]):
     source: str | None = None
     reason: str | None = None
 
-    # ── Factory constructors ──────────────────────────────────────────────────
-
     @classmethod
     def available(cls, value: T, source: str) -> "Measurement[T]":
-        """Create a successfully measured value with its data origin."""
+        """Successfully measured value with its data origin."""
         return cls(value=value, status=MeasurementStatus.AVAILABLE, source=source)
 
     @classmethod
-    def unavailable(cls, reason: str) -> "Measurement[T]":
-        """Create an unavailable measurement with a human-readable reason."""
-        return cls(value=None, status=MeasurementStatus.UNAVAILABLE, reason=reason)
+    def simulated(cls, value: T, source: str) -> "Measurement[T]":
+        """Projected value for Optimization Analysis (not a measured fact)."""
+        return cls(value=value, status=MeasurementStatus.SIMULATED, source=source)
 
-    # ── Convenience properties ────────────────────────────────────────────────
+    @classmethod
+    def unavailable(cls, reason: str) -> "Measurement[T]":
+        """Unavailable with a human-readable reason."""
+        return cls(value=None, status=MeasurementStatus.UNAVAILABLE, reason=reason)
 
     @property
     def is_available(self) -> bool:
-        """Return True if the value was successfully measured."""
+        """True if measured from a live source."""
         return self.status == MeasurementStatus.AVAILABLE
+
+    @property
+    def is_simulated(self) -> bool:
+        """True if this is an optimization projection."""
+        return self.status == MeasurementStatus.SIMULATED
+
+    @property
+    def has_value(self) -> bool:
+        """True if a numeric/string value is present (measured or simulated)."""
+        return (
+            self.status
+            in (MeasurementStatus.AVAILABLE, MeasurementStatus.SIMULATED)
+            and self.value is not None
+        )

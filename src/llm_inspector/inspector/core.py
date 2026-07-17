@@ -108,7 +108,7 @@ class Inspector:
         errors.update(phase_b.errors)
         elapsed.update(phase_b.elapsed)
 
-        return InspectionReport(
+        report = InspectionReport(
             pid=pid,
             process=process,
             hardware=hardware,
@@ -123,6 +123,20 @@ class Inspector:
             collector_errors=errors,
             elapsed_ms=elapsed,
         )
+
+        # Post-inspect Optimization Analysis (projected — does not alter collectors)
+        if collect_filter == COLLECT_ALL:
+            try:
+                from llm_inspector.optimization.analyzer import (  # noqa: PLC0415
+                    OptimizationAnalyzer,
+                )
+
+                optimization = OptimizationAnalyzer().analyze(report)
+                report = report.model_copy(update={"optimization": optimization})
+            except Exception:  # noqa: BLE001 — never break measured inspect
+                pass
+
+        return report
 
     def scan(self) -> list[InspectionReport]:
         """

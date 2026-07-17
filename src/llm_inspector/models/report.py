@@ -14,6 +14,7 @@ from llm_inspector.models.results import (
     ProcessResult,
     RuntimeResult,
 )
+from llm_inspector.optimization.models import OptimizationAnalysis
 
 
 class InspectionReport(BaseModel):
@@ -26,6 +27,8 @@ class InspectionReport(BaseModel):
     Phase B results (memory, model, memory_breakdown, runtime) are
     Optional.  Failure of one Phase B collector does not affect others;
     the error is recorded in collector_errors.
+
+    ``optimization`` is computed after collectors finish — projected only.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -42,6 +45,9 @@ class InspectionReport(BaseModel):
     model: ModelResult | None = None
     memory_breakdown: MemoryBreakdownResult | None = None
     runtime: RuntimeResult | None = None
+
+    # Post-inspect projections (never mixed into measured sections)
+    optimization: OptimizationAnalysis | None = None
 
     # Audit trail
     collector_errors: dict[str, str] = Field(
