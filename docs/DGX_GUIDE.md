@@ -16,9 +16,8 @@ This document keeps **DGX Spark–specific** notes from integrating LLM Inspecto
 | **Embedded** (recommended for prod) | `attach()` after model load | GPU Allocated / Reserved / Peak, weights / KV breakdown, model config from engine |
 
 ```bash
+# From PyPI (recommended) — install in the inference image / env
 pip install "llm-inspector[torch]"
-# or from source:
-pip install -e "/path/to/llm-inspector[torch]"
 ```
 
 **Requirements**
@@ -28,6 +27,8 @@ pip install -e "/path/to/llm-inspector[torch]"
 - GPU: NVIDIA driver + `nvidia-ml-py` (included)
 - Embedded: PyTorch in the **same process** as inference
 
+For the full host vs Docker test checklist, see **[INSTALL_GUIDE.md — Test on your inference service](INSTALL_GUIDE.md#test-on-your-inference-service-from-pypi)**.
+
 ---
 
 ## 2. External inspection (any repo, no code changes)
@@ -35,14 +36,14 @@ pip install -e "/path/to/llm-inspector[torch]"
 Works for Ollama, vLLM, HuggingFace, FastAPI, custom PyTorch — anything on GPU.
 
 ```bash
-# List GPU-attached inference processes
+# On the DGX host (if llminspect is installed on the host)
 llminspect ps
-
-# Inspect one process (host PID from ps or nvidia-smi)
 llminspect inspect <pid>
-
-# See where every number came from
 llminspect inspect <pid> --verbose
+
+# Typical DGX setup: inspect inside the inference container
+docker exec vllm-server llminspect ps
+docker exec vllm-server llminspect inspect <pid-from-ps> --verbose
 ```
 
 ### Docker PID rules
@@ -173,12 +174,12 @@ def register():
 
 Hook **after** `_initialize_kv_caches` so `kv_cache_config` / weights are available for Memory Breakdown.
 
-### B. Docker
+### B. Docker (PyPI)
 
 ```dockerfile
 FROM nvcr.io/nvidia/vllm:26.02-py3
 
-RUN pip install "/path/to/llm-inspector[torch]"
+RUN pip install "llm-inspector[torch]"
 COPY docker/llminspect_vllm_plugin /tmp/plugin
 RUN pip install /tmp/plugin
 ```
@@ -200,6 +201,9 @@ docker exec vllm-server llminspect ps
 
 docker exec vllm-server llminspect inspect <EngineCore-pid>
 docker exec vllm-server llminspect inspect <EngineCore-pid> --verbose
+
+# Confirm embedded attach (after plugin + LLM_INSPECTOR_ATTACH=1)
+docker exec vllm-server ls -la /tmp/llminspect/
 ```
 
 ### Example measured output (Whisper large-v3 on DGX GB10)
@@ -218,17 +222,17 @@ docker exec vllm-server llminspect inspect <EngineCore-pid> --verbose
 
 | Step | Action |
 |------|--------|
-| 1 | `pip install llm-inspector[torch]` in the image (or mount / COPY the repo at build) |
-| 2 | Optional: `attach()` in app code after model load |
-| 3 | For `vllm serve`: add `general_plugins` + `LLM_INSPECTOR_ATTACH=1` |
-| 4 | Install `llminspect` CLI in the image if you want `docker exec … llminspect` |
-| 5 | Wait for model load before inspecting |
+| 1 | In Dockerfile: `RUN pip install "llm-inspector[torch]"` (PyPI) |
+| 2 | Rebuild / restart the service; wait for model load |
+| 3 | `docker exec <ctr> llminspect ps` then `inspect <pid-from-ps> --verbose` |
+| 4 | Optional deep metrics: `attach()` in app code after model load |
+| 5 | For `vllm serve`: add `general_plugins` + `LLM_INSPECTOR_ATTACH=1` |
 
 Example layout (`stt-tts-service`):
 
 ```text
 stt-tts-service/
-  Dockerfile                 # llm-inspector via build context
+  Dockerfile                 # RUN pip install "llm-inspector[torch]"
   Dockerfile.vllm            # llm-inspector + vLLM plugin
   docker/llminspect_vllm_plugin/
   app/services/tts_service.py   # lazy attach() after XTTS load
@@ -300,15 +304,18 @@ def load_model():
 **Any Docker GPU service:**
 
 ```dockerfile
-RUN pip install "llm-inspector[torch] @ git+ssh://git@github.com/helasaoudi/llm-inspector.git"
+RUN pip install "llm-inspector[torch]"
 ```
 
 **Ops / debugging:**
 
 ```bash
-llminspect ps
-llminspect inspect <pid>
-llminspect inspect <pid> --verbose
+# host
+llminspect ps && llminspect inspect <pid> --verbose
+
+# docker (use PIDs from docker exec … ps)
+docker exec <ctr> llminspect ps
+docker exec <ctr> llminspect inspect <pid-from-ps> --verbose
 ```
 
 ---

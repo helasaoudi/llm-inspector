@@ -149,7 +149,7 @@ macOS · Linux · any NVIDIA GPU server (including DGX)
 
 | Guide | When to read it |
 |-------|-----------------|
-| **[Install & Integration](docs/INSTALL_GUIDE.md)** | Host + Docker install, `attach()`, vLLM plugin, troubleshooting |
+| **[Install & Integration](docs/INSTALL_GUIDE.md)** | PyPI install, test on an inference service, Docker, `attach()`, troubleshooting |
 | [DGX notes](docs/DGX_GUIDE.md) | Extra detail from a DGX Spark inference-service setup |
 
 ---

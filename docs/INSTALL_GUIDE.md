@@ -12,9 +12,94 @@ Docker is **optional**. On a simple server running Ollama, vLLM, or a Python scr
 
 | Your setup | What to do |
 |------------|------------|
+| **Quick test on a running inference service** | [Test on your inference service](#test-on-your-inference-service-from-pypi) |
 | **Simple server / bare metal** (Ollama, vLLM, HF script on the host) | [A. Install on the host](#a-install-on-the-host-no-docker) → [External inspect](#3-external-inspection-zero-code-changes) |
 | **Docker GPU services** | [B. Install inside the image](#b-install-in-docker) → inspect with `docker exec` |
 | **Deep metrics** (Allocated / Reserved / Peak / Weights / KV) | Also [Embedded `attach()`](#4-embedded-integration-deep-metrics) |
+
+---
+
+## Test on your inference service (from PyPI)
+
+Package is on PyPI: [`llm-inspector`](https://pypi.org/project/llm-inspector/). Pick the path that matches how your service runs.
+
+### Path 1 — Inference on the host (Ollama, vLLM, Python script)
+
+```bash
+# 1. Install the CLI (any venv / user pip on the GPU machine)
+pip install llm-inspector
+
+# 2. Confirm it works
+llminspect --help
+llminspect gpu
+
+# 3. List GPU inference processes
+llminspect ps
+
+# 4. Inspect one PID from the table (or from nvidia-smi)
+llminspect inspect <pid>
+llminspect inspect <pid> --verbose
+```
+
+That is enough for **external** metrics (GPU Used, process, runtime APIs).
+
+For **deep** metrics (Allocated / Reserved / Peak / Weights / KV / Model Details / Optimization Analysis), install into the **same Python env** as the model and call `attach()` after load:
+
+```bash
+pip install "llm-inspector[torch]"
+```
+
+```python
+from llm_inspector import attach
+attach(model=model)          # HuggingFace / PyTorch
+# or: attach(engine=llm.llm_engine)   # vLLM LLM()
+```
+
+Then re-run `llminspect inspect <pid> --verbose`.
+
+### Path 2 — Inference in Docker (typical production service)
+
+Install **inside the inference image** (not only on the host), rebuild/restart, then inspect with `docker exec`.
+
+**1. Add to your Dockerfile** (preferred — PyPI):
+
+```dockerfile
+RUN pip install "llm-inspector[torch]"
+```
+
+**2. Rebuild and start** the service; wait until the model is loaded (VRAM stable).
+
+**3. Smoke test from the host:**
+
+```bash
+# replace with your container name
+CTR=my-inference   # e.g. vllm-server, stt-tts-service
+
+docker exec "$CTR" llminspect --help
+docker exec "$CTR" llminspect ps
+```
+
+**4. Inspect using a PID from that `ps` output** (container PID namespace):
+
+```bash
+docker exec "$CTR" llminspect inspect <pid-from-ps>
+docker exec "$CTR" llminspect inspect <pid-from-ps> --verbose
+```
+
+**Never** pass a host `nvidia-smi` PID into `docker exec … inspect`.
+
+**5. Optional — deep metrics in Docker**
+
+- App / HF / TTS: `attach(model=…)` after load (see [§4](#4-embedded-integration-deep-metrics))
+- `vllm serve`: vLLM plugin + `LLM_INSPECTOR_ATTACH=1` (see [§5](#5-vllm-serve-plugin-pattern))
+- Confirm attach socket: `docker exec "$CTR" ls -la /tmp/llminspect/`
+
+### What “success” looks like
+
+| You did | Expect |
+|---------|--------|
+| External only | Process + Hardware GPU Used; Model may fill from APIs; Allocated / Weights often `Unavailable` |
+| + `attach()` / plugin | Allocated / Reserved / Peak, Weights / KV / Workspace, Model Details, Optimization Analysis |
 
 ---
 
@@ -77,8 +162,7 @@ llminspect ps           # inference processes on this machine
 ### System-wide (optional)
 
 ```bash
-# same venv, or:
-pip install -e "/path/to/llm-inspector[torch]"
+pip install "llm-inspector[torch]"
 # ensure `llminspect` is on PATH (venv bin or ~/.local/bin)
 ```
 
@@ -102,18 +186,17 @@ docker exec <container> llminspect ps
 docker exec <container> llminspect inspect <container-pid>
 ```
 
-### Dockerfile snippet
+### Dockerfile snippet (PyPI — recommended)
 
 ```dockerfile
-# Copy or clone the repo at build time
-COPY llm-inspector /tmp/llm-inspector
-RUN pip install -e "/tmp/llm-inspector[torch]"
+RUN pip install "llm-inspector[torch]"
 ```
 
-Or from git (SSH/HTTPS as your registry allows):
+From source (only for unreleased local changes):
 
 ```dockerfile
-RUN pip install "llm-inspector[torch] @ git+https://github.com/helasaoudi/llm-inspector.git"
+COPY llm-inspector /tmp/llm-inspector
+RUN pip install "/tmp/llm-inspector[torch]"
 ```
 
 ### Compose / env (embedded)
@@ -155,7 +238,7 @@ No `attach()` needed for basic Ollama metrics (`/api/ps`).
 ### HuggingFace / PyTorch script (host)
 
 ```bash
-pip install -e "/path/to/llm-inspector[torch]"
+pip install "llm-inspector[torch]"
 ```
 
 ```python
@@ -208,13 +291,16 @@ llminspect inspect $(pgrep -f 'VLLM::EngineCore' | head -1) --verbose
 ### Dockerized service
 
 ```bash
-# after image includes llm-inspector
+# Dockerfile: RUN pip install "llm-inspector[torch]"
 docker compose up -d --build
 
 # wait until the model is loaded (VRAM stable)
 docker exec my-inference llminspect ps
 docker exec my-inference llminspect inspect <pid-from-ps>
+docker exec my-inference llminspect inspect <pid-from-ps> --verbose
 ```
+
+Full checklist: [Test on your inference service](#test-on-your-inference-service-from-pypi).
 
 ---
 
@@ -353,8 +439,8 @@ def register():
 Install next to vLLM (host venv or Docker image):
 
 ```bash
-pip install -e "/path/to/llm-inspector[torch]"
-pip install -e "/path/to/llminspect-vllm-plugin"
+pip install "llm-inspector[torch]"
+pip install -e "/path/to/llminspect-vllm-plugin"   # your general_plugins package
 export LLM_INSPECTOR_ATTACH=1
 ```
 
