@@ -18,7 +18,7 @@
 
 LLM Inspector inspects live inference processes and shows exactly how GPU memory is being used, what model is running, how the runtime is configured, and where every reported value comes from.
 
-Unlike traditional monitoring tools, it doesn't stop at inspection. It also analyzes the running workload and projects optimization opportunities—starting with quantization—to help you understand how different strategies would impact GPU memory **before** making any changes.
+Unlike traditional monitoring tools, it doesn't stop at inspection. It also analyzes the running workload and projects optimization opportunities starting with quantization to help you understand how different strategies would impact GPU memory **before** making any changes.
 
 ---
 
