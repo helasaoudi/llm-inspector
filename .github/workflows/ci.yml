@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev extras
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Pytest
+        run: pytest --cov=llm_inspector --cov-report=term-missing
+
+      # Informational only until the existing lint/type debt is cleaned up —
+      # these report status but do not block merges.
+      - name: Ruff lint
+        continue-on-error: true
+        run: ruff check .
+
+      - name: Mypy
+        continue-on-error: true
+        run: mypy src
