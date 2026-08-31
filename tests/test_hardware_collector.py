@@ -1,11 +1,10 @@
 """Tests for HardwareCollector using a mock backend."""
 
 import os
-from unittest.mock import MagicMock
 
 from llm_inspector.backends.base import DeviceInfo, DeviceProcess, HardwareBackend
 from llm_inspector.collectors.hardware import HardwareCollector
-from llm_inspector.models.enums import BackendKind, CollectorStatus
+from llm_inspector.models.enums import BackendKind
 
 
 class MockCUDABackend(HardwareBackend):
@@ -80,6 +79,11 @@ class TestHardwareCollector:
         assert data.gpu_utilization_pct == 93
         assert data.driver_version == "575.64"
         assert data.cuda_version == "12.4"
+        assert len(data.devices) == 1
+        assert data.devices[0].index == 0
+        assert data.devices[0].process_vram_bytes == 21 * 1024**3
+        assert data.gpu_indices == [0]
+        assert data.process_vram_total_bytes == 21 * 1024**3
 
     def test_no_devices_returns_cpu_result(self):
         pid = os.getpid()

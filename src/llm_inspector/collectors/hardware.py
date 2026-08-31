@@ -15,7 +15,7 @@ import platform
 
 from llm_inspector.backends.base import HardwareBackend
 from llm_inspector.collectors.base import Collector, CollectorResult
-from llm_inspector.models.enums import BackendKind, CollectorPhase
+from llm_inspector.models.enums import CollectorPhase
 from llm_inspector.models.results import HardwareResult
 
 
@@ -50,19 +50,28 @@ def _cpu_friendly_name() -> str | None:
     if platform.system() == "Darwin":
         try:
             import subprocess  # noqa: PLC0415
-            out = subprocess.check_output(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-            ).decode().strip()
+
+            out = (
+                subprocess.check_output(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                .decode()
+                .strip()
+            )
             if out:
                 return out
             # Apple Silicon: brand_string is empty, use hw.model instead
-            out = subprocess.check_output(
-                ["sysctl", "-n", "hw.model"],
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-            ).decode().strip()
+            out = (
+                subprocess.check_output(
+                    ["sysctl", "-n", "hw.model"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                )
+                .decode()
+                .strip()
+            )
             return out or None
         except Exception:  # noqa: BLE001
             pass
@@ -92,6 +101,8 @@ class HardwareCollector(Collector[HardwareResult]):
         pid: int,
         backend: HardwareBackend,
     ) -> HardwareResult:
+        from llm_inspector.models.results import GpuAttachment  # noqa: PLC0415
+
         cpu_info = _collect_cpu_info()
         devices = backend.list_devices()
 
@@ -106,25 +117,41 @@ class HardwareCollector(Collector[HardwareResult]):
                 **cpu_info,
             )
 
-        # Use the first device this PID is attached to
-        primary_proc = pid_procs[0]
-        device = next(
-            (d for d in devices if d.index == primary_proc.device_index), None
-        )
+        # Every GPU this PID is attached to (NVML-measured).
+        device_by_index = {d.index: d for d in devices}
+        attachments: list[GpuAttachment] = []
+        for proc in sorted(pid_procs, key=lambda p: p.device_index):
+            device = device_by_index.get(proc.device_index)
+            if device is None:
+                continue
+            attachments.append(
+                GpuAttachment(
+                    index=device.index,
+                    name=device.name,
+                    vram_total_bytes=device.vram_total_bytes,
+                    vram_used_bytes=device.vram_used_bytes,
+                    gpu_utilization_pct=device.gpu_utilization_pct,
+                    process_vram_bytes=proc.vram_used_bytes,
+                )
+            )
 
-        if device is None:
+        if not attachments:
             return HardwareResult(backend=backend.kind, **cpu_info)
 
+        primary = attachments[0]
         return HardwareResult(
             backend=backend.kind,
-            device_index=device.index,
-            gpu_name=device.name,
-            # device-level totals may be None on unified-memory GPUs (GB10)
-            vram_total_bytes=device.vram_total_bytes,
-            # per-process VRAM is available even when device total is not
-            vram_used_bytes=primary_proc.vram_used_bytes or device.vram_used_bytes,
-            gpu_utilization_pct=device.gpu_utilization_pct,
-            driver_version=device.driver_version,
-            cuda_version=device.cuda_version,
+            device_index=primary.index,
+            gpu_name=primary.name,
+            vram_total_bytes=primary.vram_total_bytes,
+            # Primary VRAM used = this PID on the primary GPU (measured)
+            vram_used_bytes=primary.process_vram_bytes
+            if primary.process_vram_bytes is not None
+            else primary.vram_used_bytes,
+            gpu_utilization_pct=primary.gpu_utilization_pct,
+            driver_version=backend.driver_version()
+            or device_by_index[primary.index].driver_version,
+            cuda_version=backend.runtime_version() or device_by_index[primary.index].cuda_version,
+            devices=attachments,
             **cpu_info,
         )

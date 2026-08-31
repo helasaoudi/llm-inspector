@@ -7,6 +7,7 @@ Data resolution:
   - process_ram, gpu_used: always external (psutil, NVML)
   - gpu_allocated, gpu_reserved, peak: EmbeddedSource if attached,
     otherwise Unavailable with honest reason
+  - devices: per-GPU torch metrics only when attach reports them
 """
 
 from __future__ import annotations
@@ -44,18 +45,35 @@ class MemoryCollector(Collector[MemoryResult]):
         # ── Process RAM via psutil ────────────────────────────────────────────
         process_ram = self._read_process_ram(pid)
 
-        # ── GPU memory via backend ────────────────────────────────────────────
-        gpu_used = Measurement[int].unavailable(
-            "No GPU device attached to this process."
-        )
-        if ctx.hardware.device_index is not None:
+        # ── GPU memory via backend (sum across all attached GPUs) ─────────────
+        gpu_used = Measurement[int].unavailable("No GPU device attached to this process.")
+        if ctx.hardware.devices:
+            pid_map = backend.pid_to_devices()
+            pid_procs = pid_map.get(pid, [])
+            if pid_procs:
+                total_vram = sum(p.vram_used_bytes for p in pid_procs)
+                gpu_ids = ",".join(
+                    str(p.device_index) for p in sorted(pid_procs, key=lambda p: p.device_index)
+                )
+                gpu_used = Measurement[int].available(
+                    total_vram,
+                    source=(
+                        "NVML nvmlDeviceGetComputeRunningProcesses() — "
+                        f"sum of process VRAM on GPU(s) {gpu_ids}"
+                    ),
+                )
+        elif ctx.hardware.device_index is not None:
+            # Compat: primary-only path if devices list empty
             pid_map = backend.pid_to_devices()
             pid_procs = pid_map.get(pid, [])
             if pid_procs:
                 total_vram = sum(p.vram_used_bytes for p in pid_procs)
                 gpu_used = Measurement[int].available(
                     total_vram,
-                    source=f"NVML nvmlDeviceGetComputeRunningProcesses() — GPU {pid_procs[0].device_index}",
+                    source=(
+                        "NVML nvmlDeviceGetComputeRunningProcesses() — "
+                        f"GPU {pid_procs[0].device_index}"
+                    ),
                 )
 
         # GPU Allocated / Reserved / Peak — try embedded source first
@@ -70,6 +88,7 @@ class MemoryCollector(Collector[MemoryResult]):
         peak = Measurement[int].unavailable(
             "Peak GPU memory requires embedded inspector with streaming counters."
         )
+        device_memories: list = []
 
         embedded_data = get_resolver().fetch("memory", ctx)
         if embedded_data is not None:
@@ -80,6 +99,7 @@ class MemoryCollector(Collector[MemoryResult]):
                 gpu_reserved = embedded.gpu_reserved
             if embedded.peak.is_available:
                 peak = embedded.peak
+            device_memories = list(embedded.devices)
 
         return MemoryResult(
             process_ram=process_ram,
@@ -87,6 +107,7 @@ class MemoryCollector(Collector[MemoryResult]):
             gpu_allocated=gpu_allocated,
             gpu_reserved=gpu_reserved,
             peak=peak,
+            devices=device_memories,
         )
 
     @staticmethod

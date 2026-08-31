@@ -101,6 +101,19 @@ docker exec "$CTR" llminspect inspect <pid-from-ps> --verbose
 | External only | Process + Hardware GPU Used; Model may fill from APIs; Allocated / Weights often `Unavailable` |
 | + `attach()` / plugin | Allocated / Reserved / Peak, Weights / KV / Workspace, Model Details, Optimization Analysis |
 
+### Multi-GPU (v0.7+)
+
+```bash
+llminspect gpu          # all real NVML devices (Total / Used / Free / Util)
+llminspect ps           # GPUs column: e.g. 0 or 0,1,2,3
+llminspect inspect <pid> --verbose
+```
+
+- Process / Model / Runtime appear **once** (process-level).
+- Each GPU the PID uses gets its own block: device VRAM, util, process VRAM (NVML).
+- Per-GPU Allocated / Reserved / Peak appear only when `attach()` can measure them via `torch.cuda.memory_*(device)` inside the inference process — otherwise `Unavailable`.
+- No projected per-GPU Weights/KV splits; memory breakdown stays process-level and measured.
+
 ---
 
 ## Requirements

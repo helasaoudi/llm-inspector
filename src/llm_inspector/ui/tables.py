@@ -7,7 +7,6 @@ from __future__ import annotations
 from rich import box
 from rich.console import Console
 from rich.table import Table
-from rich.text import Text
 
 from llm_inspector.models.enums import BackendKind
 from llm_inspector.models.report import InspectionReport
@@ -47,6 +46,7 @@ def render_ps_table(reports: list[InspectionReport], console: Console) -> None:
     table.add_column("Model")
     table.add_column("Backend", no_wrap=True)
     if has_gpu:
+        table.add_column("GPUs", no_wrap=True)
         table.add_column("GPU%", justify="right", no_wrap=True)
         table.add_column("VRAM", justify="right", no_wrap=True)
     else:
@@ -65,13 +65,24 @@ def render_ps_table(reports: list[InspectionReport], console: Console) -> None:
         backend = r.hardware.backend.value
 
         if has_gpu:
+            if r.hardware.gpu_indices:
+                gpus = ",".join(str(i) for i in r.hardware.gpu_indices)
+            elif r.hardware.device_index is not None:
+                gpus = str(r.hardware.device_index)
+            else:
+                gpus = "—"
+
             gpu_util = (
                 f"{r.hardware.gpu_utilization_pct}%"
                 if r.hardware.gpu_utilization_pct is not None
                 else "—"
             )
-            vram = fmt_bytes(r.hardware.vram_used_bytes)
-            table.add_row(str(r.pid), runtime, model_str, backend, gpu_util, vram, uptime)
+            # Prefer summed process VRAM across GPUs when available
+            vram_bytes = r.hardware.process_vram_total_bytes
+            if vram_bytes is None:
+                vram_bytes = r.hardware.vram_used_bytes
+            vram = fmt_bytes(vram_bytes)
+            table.add_row(str(r.pid), runtime, model_str, backend, gpus, gpu_util, vram, uptime)
         else:
             # CPU/Metal backend — show process RAM instead
             ram = "—"

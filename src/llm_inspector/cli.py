@@ -21,6 +21,7 @@ app = typer.Typer(
 
 console = Console()
 
+
 @app.command("ps")
 def cmd_ps() -> None:
     """List all GPU-attached LLM inference processes."""
@@ -67,8 +68,9 @@ def cmd_inspect(
 @app.command("gpu")
 def cmd_gpu() -> None:
     """Show GPU device summary (VRAM, utilisation, driver version)."""
-    from rich.table import Table  # noqa: PLC0415
     from rich import box as rbox  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
     from llm_inspector.backends.registry import BackendRegistry  # noqa: PLC0415
     from llm_inspector.ui.format import fmt_bytes  # noqa: PLC0415
 
@@ -80,21 +82,29 @@ def cmd_gpu() -> None:
         console.print("[dim]No GPU devices detected.[/dim]")
         return
 
+    n = len(devices)
+    console.print(f"[bold]GPUs[/bold]  {n} device{'s' if n != 1 else ''} ({backend.kind.value})")
+
     t = Table(box=rbox.SIMPLE_HEAD, header_style="bold", padding=(0, 1))
-    t.add_column("GPU", style="cyan", min_width=4)
+    t.add_column("IDX", style="cyan", min_width=3)
     t.add_column("Name")
-    t.add_column("VRAM Used", justify="right")
-    t.add_column("VRAM Total", justify="right")
-    t.add_column("GPU Util", justify="right")
+    t.add_column("Total", justify="right")
+    t.add_column("Used", justify="right")
+    t.add_column("Free", justify="right")
+    t.add_column("Util", justify="right")
     t.add_column("Driver")
     t.add_column("CUDA")
 
     for d in devices:
+        free = None
+        if d.vram_total_bytes is not None and d.vram_used_bytes is not None:
+            free = max(0, d.vram_total_bytes - d.vram_used_bytes)
         t.add_row(
             str(d.index),
             d.name,
-            fmt_bytes(d.vram_used_bytes),
             fmt_bytes(d.vram_total_bytes),
+            fmt_bytes(d.vram_used_bytes),
+            fmt_bytes(free),
             f"{d.gpu_utilization_pct}%" if d.gpu_utilization_pct is not None else "—",
             d.driver_version or "—",
             d.cuda_version or "—",
@@ -102,12 +112,18 @@ def cmd_gpu() -> None:
 
     console.print(t)
 
+    driver = devices[0].driver_version or backend.driver_version()
+    cuda = devices[0].cuda_version or backend.runtime_version()
+    if driver or cuda:
+        console.print(f"[dim]Driver {driver or '—'} · CUDA {cuda or '—'}[/dim]")
+
 
 @app.command("runtimes")
 def cmd_runtimes() -> None:
     """List registered runtime plugins and their capabilities."""
-    from rich.table import Table  # noqa: PLC0415
     from rich import box as rbox  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
     from llm_inspector.inspector.core import Inspector  # noqa: PLC0415
 
     inspector = Inspector()

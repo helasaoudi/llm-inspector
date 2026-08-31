@@ -7,11 +7,26 @@ the --collect flag can selectively render only matching sections.
 
 from __future__ import annotations
 
-from rich import box
+from datetime import UTC
+
 from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+
+from llm_inspector.models.measurement import Measurement
+from llm_inspector.models.report import InspectionReport
+from llm_inspector.ui.format import (
+    fmt_bytes,
+    fmt_measurement_bytes,
+    fmt_measurement_str,
+    fmt_uptime,
+    truncate,
+)
+
+_SECTION_STYLE = "bold white"
+_LABEL_STYLE = "dim"
+_UNAVAIL_STYLE = "dim italic"
 
 
 def _source(val_str: str, source: str) -> Text:
@@ -29,21 +44,6 @@ def _reason(reason: str) -> Text:
     t.append(f"  ({reason})", style="dim")
     return t
 
-from llm_inspector.models.measurement import Measurement
-from llm_inspector.models.report import InspectionReport
-from llm_inspector.ui.format import (
-    fmt_bytes,
-    fmt_measurement_bytes,
-    fmt_measurement_int,
-    fmt_measurement_str,
-    fmt_uptime,
-    truncate,
-)
-
-_SECTION_STYLE = "bold white"
-_LABEL_STYLE = "dim"
-_UNAVAIL_STYLE = "dim italic"
-
 
 def _fmt_expiry(iso_str: str) -> str:
     """
@@ -53,12 +53,14 @@ def _fmt_expiry(iso_str: str) -> str:
     Falls back to the raw string if parsing fails.
     """
     try:
-        from datetime import datetime, timezone  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+
         from dateutil import parser as dtparser  # type: ignore[import-untyped]  # noqa: PLC0415
+
         expiry = dtparser.parse(iso_str)
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
+            expiry = expiry.replace(tzinfo=UTC)
         delta = expiry - now
         secs = int(delta.total_seconds())
         if secs < 0:
@@ -122,13 +124,19 @@ def render_process_section(
     raw_cmd = report.process.cmdline_str or ""
     cmd = raw_cmd if verbose else truncate(raw_cmd, 120)
     t.add_row("Command", cmd or "Unavailable")
-    t.add_row("Started", fmt_uptime(report.process.uptime_seconds) + " ago"
-              if report.process.uptime_seconds else "Unavailable")
+    t.add_row(
+        "Started",
+        fmt_uptime(report.process.uptime_seconds) + " ago"
+        if report.process.uptime_seconds
+        else "Unavailable",
+    )
     console.print(t)
     console.print()
 
 
-def render_hardware_section(report: InspectionReport, console: Console) -> None:
+def render_hardware_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
 
     console.print(Rule("Hardware", style=_SECTION_STYLE, align="left"))
@@ -153,23 +161,106 @@ def render_hardware_section(report: InspectionReport, console: Console) -> None:
         t.add_row("CPU Utilization", _val(cpu_util))
         t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
         t.add_row("System RAM Used", _val(fmt_bytes(hw.system_ram_used_bytes)))
-    else:
-        # GPU backend — show GPU fields
-        t.add_row("GPU", _val(hw.gpu_name or "Unavailable"))
+        console.print(t)
+        console.print()
+        return
+
+    # GPU backend
+    attachments = hw.devices
+    if len(attachments) <= 1:
+        # Single-GPU path — same shape as before (+ free + index)
+        gpu_label = hw.gpu_name or "Unavailable"
+        if hw.device_index is not None and hw.gpu_name:
+            gpu_label = f"{hw.gpu_name}  (GPU {hw.device_index})"
+        t.add_row("GPU", _val(gpu_label))
         t.add_row("Driver", _val(hw.driver_version or "Unavailable"))
         t.add_row("CUDA", _val(hw.cuda_version or "Unavailable"))
         t.add_row("VRAM Total", _val(fmt_bytes(hw.vram_total_bytes)))
         t.add_row("VRAM Used", _val(fmt_bytes(hw.vram_used_bytes)))
+        free = attachments[0].vram_free_bytes if attachments else None
+        if free is None and hw.vram_total_bytes is not None and hw.vram_used_bytes is not None:
+            free = max(0, hw.vram_total_bytes - hw.vram_used_bytes)
+        t.add_row("VRAM Free", _val(fmt_bytes(free)))
         gpu_util = (
-            f"{hw.gpu_utilization_pct}%"
-            if hw.gpu_utilization_pct is not None
-            else "Unavailable"
+            f"{hw.gpu_utilization_pct}%" if hw.gpu_utilization_pct is not None else "Unavailable"
         )
         t.add_row("GPU Utilization", _val(gpu_util))
         t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
+        console.print(t)
+        console.print()
+        return
 
+    # Multi-GPU — process-level summary, then one measured block per GPU
+    ids = ",".join(str(d.index) for d in attachments)
+    t.add_row("GPUs", _val(f"{len(attachments)} devices  ({ids})"))
+    t.add_row("Driver", _val(hw.driver_version or "Unavailable"))
+    t.add_row("CUDA", _val(hw.cuda_version or "Unavailable"))
+    t.add_row("Process VRAM Total", _val(fmt_bytes(hw.process_vram_total_bytes)))
+    if verbose:
+        t.add_row(
+            "",
+            Text(
+                "  [NVML sum of process usedGpuMemory across attached GPUs]",
+                style="dim",
+            ),
+        )
+    t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
     console.print(t)
     console.print()
+
+    torch_by_index = {}
+    if report.memory is not None:
+        torch_by_index = {d.device_index: d for d in report.memory.devices}
+
+    for att in attachments:
+        console.print(Rule(f"GPU {att.index}", style=_SECTION_STYLE, align="left"))
+        gt = _kv_table()
+        gt.add_row("Name", _val(att.name or "Unavailable"))
+        device_line = (
+            f"{fmt_bytes(att.vram_used_bytes)} / {fmt_bytes(att.vram_total_bytes)}"
+            if att.vram_total_bytes is not None
+            else fmt_bytes(att.vram_used_bytes)
+        )
+        free_s = fmt_bytes(att.vram_free_bytes)
+        util_s = (
+            f"{att.gpu_utilization_pct}%" if att.gpu_utilization_pct is not None else "Unavailable"
+        )
+        gt.add_row("Device VRAM", _val(f"{device_line}  (free {free_s})"))
+        gt.add_row("GPU Utilization", _val(util_s))
+        gt.add_row("Process VRAM", _val(fmt_bytes(att.process_vram_bytes)))
+        if verbose:
+            gt.add_row(
+                "",
+                Text(
+                    f"  [NVML compute process on GPU {att.index}]",
+                    style="dim",
+                ),
+            )
+
+        torch_m = torch_by_index.get(att.index)
+        if torch_m is not None:
+            for label, meas in (
+                ("GPU Allocated", torch_m.allocated),
+                ("GPU Reserved", torch_m.reserved),
+                ("Peak GPU", torch_m.peak),
+            ):
+                val_str = fmt_measurement_bytes(meas)
+                if verbose and meas.is_available and meas.source:
+                    gt.add_row(label, _source(val_str, meas.source))
+                elif verbose and not meas.is_available and meas.reason:
+                    gt.add_row(label, _reason(meas.reason))
+                else:
+                    gt.add_row(label, _val(val_str))
+        elif verbose:
+            gt.add_row(
+                "GPU Allocated",
+                _reason(
+                    "Per-device torch metrics require embedded attach() in the inference process."
+                ),
+            )
+
+        console.print(gt)
+        console.print()
 
 
 def render_model_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
@@ -192,7 +283,9 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
             t.add_row(label, _val(val_str))
 
     def mrow_int(label: str, meas: Measurement[int], formatter=str) -> None:
-        val_str = formatter(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
+        val_str = (
+            formatter(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
+        )
         if verbose and meas.is_available and meas.source:
             t.add_row(label, _source(val_str, meas.source))
         elif verbose and not meas.is_available and meas.reason:
@@ -217,6 +310,7 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         raw_hint = ""
         if m.parameter_count.reason and "parameter_size='" in m.parameter_count.reason:
             import re  # noqa: PLC0415
+
             match = re.search(r"parameter_size='([^']+)'", m.parameter_count.reason)
             if match:
                 raw_hint = match.group(1)
@@ -246,11 +340,7 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         if not meas.is_available and not verbose:
             return
         has_details = True
-        val_str = (
-            str(meas.value)
-            if meas.is_available and meas.value is not None
-            else "Unavailable"
-        )
+        val_str = str(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
         if verbose and meas.is_available and meas.source:
             t2.add_row(label, _source(val_str, meas.source))
         elif verbose and not meas.is_available and meas.reason:
@@ -299,7 +389,9 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         console.print()
 
 
-def render_memory_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
+def render_memory_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
 
     console.print(Rule("Memory", style=_SECTION_STYLE, align="left"))
@@ -364,7 +456,9 @@ def render_memory_breakdown_section(
     console.print()
 
 
-def render_runtime_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
+def render_runtime_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     console.print(Rule("Runtime Details", style=_SECTION_STYLE, align="left"))
     if report.runtime is None:
         console.print("[dim]  Runtime details unavailable.[/dim]")
@@ -402,14 +496,11 @@ def render_optimization_section(
     from llm_inspector.ui.format import fmt_projected_bytes  # noqa: PLC0415
 
     opt = report.optimization
-    console.print(
-        Rule("Optimization Analysis (Projected)", style=_SECTION_STYLE, align="left")
-    )
+    console.print(Rule("Optimization Analysis (Projected)", style=_SECTION_STYLE, align="left"))
 
     if opt is None:
         console.print(
-            "[dim]  Optimization Analysis unavailable "
-            "(insufficient measured data).[/dim]"
+            "[dim]  Optimization Analysis unavailable (insufficient measured data).[/dim]"
         )
         console.print()
         return
@@ -483,7 +574,7 @@ def render_full_report(
         render_process_section(report, console, verbose=verbose)
 
     if show_all or collect_filter == "hardware":
-        render_hardware_section(report, console)
+        render_hardware_section(report, console, verbose=verbose)
 
     if show_all or collect_filter == "model":
         render_model_section(report, console, verbose=verbose)
