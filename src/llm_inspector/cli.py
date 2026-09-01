@@ -50,19 +50,38 @@ def cmd_inspect(
         bool,
         typer.Option("--verbose", "-v", help="Show data source for every field."),
     ] = False,
+    group: Annotated[
+        bool,
+        typer.Option(
+            "--group/--no-group",
+            help=(
+                "For vLLM TP jobs, inspect all Worker_TP*/EngineCore siblings "
+                "together (default: on)."
+            ),
+        ),
+    ] = True,
 ) -> None:
-    """Inspect a single LLM inference process."""
+    """Inspect an LLM inference process (auto-groups vLLM TP workers)."""
     from llm_inspector.inspector.core import Inspector  # noqa: PLC0415
-    from llm_inspector.ui.panels import render_full_report  # noqa: PLC0415
+    from llm_inspector.ui.panels import (  # noqa: PLC0415
+        render_full_report,
+        render_tp_group_report,
+    )
+    from llm_inspector.utils.vllm_group import discover_vllm_tp_group  # noqa: PLC0415
 
     inspector = Inspector()
+    pids = discover_vllm_tp_group(pid) if group else [pid]
+
     try:
-        report = inspector.inspect(pid=pid, collect_filter=collect)
+        reports = [inspector.inspect(pid=p, collect_filter=collect) for p in pids]
     except RuntimeError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    render_full_report(report, console, collect_filter=collect, verbose=verbose)
+    if len(reports) == 1:
+        render_full_report(reports[0], console, collect_filter=collect, verbose=verbose)
+    else:
+        render_tp_group_report(reports, console, collect_filter=collect, verbose=verbose)
 
 
 @app.command("gpu")

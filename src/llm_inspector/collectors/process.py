@@ -18,19 +18,26 @@ from llm_inspector.utils import proc as proc_utils
 # Each entry: (RuntimeKind, list_of_regex_patterns).
 # Evaluated in order; first match wins.
 _RUNTIME_RULES: list[tuple[RuntimeKind, list[str]]] = [
-    (RuntimeKind.VLLM,          [r"\bvllm\b", r"vllm\.entrypoints", r"VLLM::EngineCore"]),
-    (RuntimeKind.OLLAMA,        [r"\bollama\b"]),
-    (RuntimeKind.TENSORRT,      [r"tritonserver", r"trtllm", r"tensorrt_llm"]),
-    (RuntimeKind.SGLANG,        [r"\bsglang\b"]),
-    (RuntimeKind.LLAMA_CPP,     [r"llama[-_]server", r"llama[-_]cli", r"llama_cpp"]),
-    (RuntimeKind.HUGGING_FACE,  [r"\btransformers\b", r"from_pretrained"]),
+    (
+        RuntimeKind.VLLM,
+        [
+            r"\bvllm\b",
+            r"vllm\.entrypoints",
+            r"VLLM::EngineCore",
+            r"VLLM::Worker_TP",
+        ],
+    ),
+    (RuntimeKind.OLLAMA, [r"\bollama\b"]),
+    (RuntimeKind.TENSORRT, [r"tritonserver", r"trtllm", r"tensorrt_llm"]),
+    (RuntimeKind.SGLANG, [r"\bsglang\b"]),
+    (RuntimeKind.LLAMA_CPP, [r"llama[-_]server", r"llama[-_]cli", r"llama_cpp"]),
+    (RuntimeKind.HUGGING_FACE, [r"\btransformers\b", r"from_pretrained"]),
     # uvicorn/FastAPI — custom inference API servers served via ASGI
-    (RuntimeKind.FASTAPI,       [r"\buvicorn\b", r"\bfastapi\b", r"\bgunicorn\b"]),
+    (RuntimeKind.FASTAPI, [r"\buvicorn\b", r"\bfastapi\b", r"\bgunicorn\b"]),
 ]
 
 _COMPILED_RULES: list[tuple[RuntimeKind, list[re.Pattern[str]]]] = [
-    (kind, [re.compile(p, re.IGNORECASE) for p in patterns])
-    for kind, patterns in _RUNTIME_RULES
+    (kind, [re.compile(p, re.IGNORECASE) for p in patterns]) for kind, patterns in _RUNTIME_RULES
 ]
 
 
@@ -65,8 +72,7 @@ class ProcessCollector(Collector[ProcessResult]):
         cmdline = proc_utils.read_cmdline(pid)
         if not cmdline:
             raise RuntimeError(
-                f"Cannot read cmdline for PID {pid}. "
-                "Process may have exited or access is denied."
+                f"Cannot read cmdline for PID {pid}. Process may have exited or access is denied."
             )
 
         return ProcessResult(

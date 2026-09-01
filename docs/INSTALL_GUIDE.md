@@ -114,6 +114,13 @@ llminspect inspect <pid> --verbose
 - Per-GPU Allocated / Reserved / Peak appear only when `attach()` can measure them via `torch.cuda.memory_*(device)` inside the inference process — otherwise `Unavailable`.
 - No projected per-GPU Weights/KV splits; memory breakdown stays process-level and measured.
 
+**vLLM tensor-parallel jobs** often use one process per GPU (`VLLM::Worker_TP0`, `Worker_TP1`, …). Inspecting **any** member PID auto-groups siblings:
+
+```bash
+llminspect inspect 1538888 --verbose   # also pulls Worker_TP1 if same parent
+llminspect inspect 1538888 --no-group  # single PID only
+```
+
 ---
 
 ## Requirements

@@ -593,3 +593,138 @@ def render_full_report(
         render_optimization_section(report, console, verbose=verbose)
 
     render_footer(console)
+
+
+def _pick_primary_report(reports: list[InspectionReport]) -> InspectionReport:
+    """Prefer EngineCore / report with model data for process-level sections."""
+    from llm_inspector.utils.vllm_group import worker_label  # noqa: PLC0415
+
+    for r in reports:
+        if worker_label(r.pid) == "EngineCore":
+            return r
+    for r in reports:
+        if r.model is not None and r.model.name.is_available:
+            return r
+    return reports[0]
+
+
+def render_tp_group_report(
+    reports: list[InspectionReport],
+    console: Console,
+    collect_filter: str = "all",
+    verbose: bool = False,
+) -> None:
+    """
+    Render one vLLM TP job spanning multiple Worker_TP* / EngineCore PIDs.
+
+    Process-level Model / Runtime / Optimization come from the primary member.
+    Each GPU-attached worker gets its own measured Hardware + Memory block.
+    """
+    from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
+    from llm_inspector.utils.vllm_group import worker_label  # noqa: PLC0415
+
+    if len(reports) == 1:
+        render_full_report(reports[0], console, collect_filter=collect_filter, verbose=verbose)
+        return
+
+    primary = _pick_primary_report(reports)
+    captured_at = primary.captured_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    render_header(console, captured_at=captured_at)
+
+    show_all = collect_filter == "all"
+
+    # ── Process group (once) ────────────────────────────────────────────────
+    console.print(Rule("Process Group (vLLM TP)", style=_SECTION_STYLE, align="left"))
+    gt = _kv_table()
+    gt.add_row("Members", _val(str(len(reports))))
+    pids = ", ".join(str(r.pid) for r in reports)
+    gt.add_row("PIDs", _val(pids))
+    console.print(gt)
+    console.print()
+
+    for r in reports:
+        label = worker_label(r.pid)
+        gpus = (
+            ",".join(str(i) for i in r.hardware.gpu_indices)
+            if r.hardware.gpu_indices
+            else (str(r.hardware.device_index) if r.hardware.device_index is not None else "—")
+        )
+        console.print(f"  {label:<14} PID {r.pid:<10} GPU(s) {gpus}")
+    console.print()
+
+    if show_all or collect_filter == "model":
+        render_model_section(primary, console, verbose=verbose)
+
+    # ── Per-member GPU / memory (measured) ──────────────────────────────────
+    if show_all or collect_filter in ("hardware", "memory", "memory-breakdown", "all"):
+        for r in reports:
+            label = worker_label(r.pid)
+            # Skip EngineCore if it has no GPU attachment (CPU coordinator)
+            if (
+                label == "EngineCore"
+                and r.hardware.backend == BackendKind.CPU
+                and not r.hardware.devices
+            ):
+                continue
+
+            gpu_ids = (
+                ",".join(str(i) for i in r.hardware.gpu_indices)
+                if r.hardware.gpu_indices
+                else (str(r.hardware.device_index) if r.hardware.device_index is not None else "?")
+            )
+            console.print(
+                Rule(
+                    f"{label}  ·  PID {r.pid}  ·  GPU {gpu_ids}",
+                    style=_SECTION_STYLE,
+                    align="left",
+                )
+            )
+            if show_all or collect_filter == "hardware":
+                render_hardware_section(r, console, verbose=verbose)
+            if show_all or collect_filter == "memory":
+                render_memory_section(r, console, verbose=verbose)
+            if show_all or collect_filter == "memory-breakdown":
+                render_memory_breakdown_section(r, console, verbose=verbose)
+
+    # ── Totals across GPU workers ───────────────────────────────────────────
+    if show_all or collect_filter in ("hardware", "memory", "all"):
+        console.print(Rule("TP Job Totals (Measured)", style=_SECTION_STYLE, align="left"))
+        tt = _kv_table()
+        vram_parts = [
+            r.hardware.process_vram_total_bytes
+            if r.hardware.process_vram_total_bytes is not None
+            else r.hardware.vram_used_bytes
+            for r in reports
+            if worker_label(r.pid) != "EngineCore"
+            or r.hardware.devices
+            or r.hardware.device_index is not None
+        ]
+        measured = [v for v in vram_parts if v is not None]
+        if measured:
+            tt.add_row("Process VRAM Total", _val(fmt_bytes(sum(measured))))
+            if verbose:
+                tt.add_row(
+                    "",
+                    Text(
+                        "  [sum of NVML process VRAM across TP worker PIDs]",
+                        style="dim",
+                    ),
+                )
+        gpu_set: list[int] = []
+        for r in reports:
+            gpu_set.extend(r.hardware.gpu_indices)
+            if not r.hardware.gpu_indices and r.hardware.device_index is not None:
+                gpu_set.append(r.hardware.device_index)
+        if gpu_set:
+            uniq = sorted(set(gpu_set))
+            tt.add_row("GPUs used", _val(",".join(str(i) for i in uniq)))
+        console.print(tt)
+        console.print()
+
+    if show_all or collect_filter == "runtime":
+        render_runtime_section(primary, console, verbose=verbose)
+
+    if show_all:
+        render_optimization_section(primary, console, verbose=verbose)
+
+    render_footer(console)
