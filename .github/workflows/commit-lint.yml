@@ -22,5 +22,5 @@ jobs:
         uses: webiny/action-conventional-commits@v1.3.0
         with:
           # Same types as .pre-commit-config.yaml / commit-conventions rule
-          allowed-commit-types: >-
-            feat,fix, docs, test, ci, refactor, perf, chore, style, build, revert
+          # No spaces after commas — the action does not trim type names
+          allowed-commit-types: feat,fix,docs,test,ci,refactor,perf,chore,style,build,revert
