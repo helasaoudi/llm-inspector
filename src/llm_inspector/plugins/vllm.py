@@ -26,7 +26,7 @@ from llm_inspector.models.results import (
     ModelResult,
 )
 from llm_inspector.plugins.base import RuntimePlugin
-from llm_inspector.utils.cmdline import detect_host, detect_port, parse_arg, parse_int_arg
+from llm_inspector.utils.cmdline import parse_arg, parse_int_arg
 from llm_inspector.utils.http import find_metric, get_json, get_text, parse_prometheus
 from llm_inspector.utils.vllm_urls import is_engine_core_process, resolve_vllm_base_url
 
@@ -39,7 +39,7 @@ _LOG = logging.getLogger(__name__)
 # Prometheus metric names used by vLLM
 _METRIC_KV_USAGE = "vllm:gpu_cache_usage_perc"
 _METRIC_WEIGHTS_BYTES = "vllm:model_weights_memory_bytes"  # newer vLLM versions
-_METRIC_KV_BYTES = "vllm:gpu_cache_memory_bytes"          # newer vLLM versions
+_METRIC_KV_BYTES = "vllm:gpu_cache_memory_bytes"  # newer vLLM versions
 
 
 class VLLMPlugin(RuntimePlugin):
@@ -58,36 +58,47 @@ class VLLMPlugin(RuntimePlugin):
     display_name = "vLLM"
     description = "OpenAI-compatible inference server with PagedAttention KV cache."
 
-    def supports(self, process: "ProcessResult") -> bool:
+    def supports(self, process: ProcessResult) -> bool:
         cmdline_str = " ".join(process.cmdline).lower()
         return "vllm" in cmdline_str or is_engine_core_process(process.cmdline)
 
-    def _base_url(self, ctx: "InspectionContext") -> tuple[str, str]:
-        """Resolve API base URL with provenance (cmdline, env, or port probe)."""
+    def _base_url(self, ctx: InspectionContext) -> tuple[str, str]:
+        """Resolve API base URL with provenance (cmdline, env, sibling, or probe)."""
         from llm_inspector.utils import procfs  # noqa: PLC0415
 
         snap = procfs.snapshot(ctx.pid)
-        return resolve_vllm_base_url(ctx.process.cmdline, snap.environ)
+        return resolve_vllm_base_url(
+            ctx.process.cmdline,
+            snap.environ,
+            pid=ctx.pid,
+        )
 
     # ── Capability methods ────────────────────────────────────────────────────
 
-    def get_model_info(self, ctx: "InspectionContext") -> ModelResult | None:
+    def get_model_info(self, ctx: InspectionContext) -> ModelResult | None:
         cmdline = ctx.process.cmdline
         base_url, _url_source = self._base_url(ctx)
 
-        # Model name — try API first, fall back to cmdline.
+        # Model name — cmdline first (this process), then API.
         # Intentionally avoid -m (clashes with `python -m <module>`).
-        name = self._api_model_name(base_url) or parse_arg(cmdline, "--model")
-        name_m = (
-            Measurement[str].available(name, source=f"vLLM GET {base_url}/v1/models")
-            if name
-            else Measurement[str].unavailable("--model not found in cmdline and /v1/models unreachable.")
-        )
+        name_cmdline = parse_arg(cmdline, "--model")
+        name_api = self._api_model_name(base_url)
+        if name_cmdline:
+            name_m = Measurement[str].available(name_cmdline, source="cmdline --model")
+        elif name_api:
+            name_m = Measurement[str].available(name_api, source=f"vLLM GET {base_url}/v1/models")
+        else:
+            name_m = Measurement[str].unavailable(
+                "--model not found in cmdline and /v1/models unreachable."
+            )
 
         # Context length — from /v1/models API
         ctx_len = self._api_context_length(base_url)
         ctx_len_m = (
-            Measurement[int].available(ctx_len, source=f"vLLM GET {base_url}/v1/models → max_model_len")
+            Measurement[int].available(
+                ctx_len,
+                source=f"vLLM GET {base_url}/v1/models → max_model_len",
+            )
             if ctx_len
             else Measurement[int].unavailable("max_model_len not returned by /v1/models.")
         )
@@ -118,9 +129,7 @@ class VLLMPlugin(RuntimePlugin):
 
         return ModelResult(
             name=name_m,
-            architecture=Measurement[str].unavailable(
-                "Architecture not exposed by vLLM API."
-            ),
+            architecture=Measurement[str].unavailable("Architecture not exposed by vLLM API."),
             parameter_count=Measurement[int].unavailable(
                 "Parameter count not exposed by vLLM API."
             ),
@@ -130,9 +139,7 @@ class VLLMPlugin(RuntimePlugin):
             pipeline_parallel=pp_m,
         )
 
-    def get_memory_breakdown(
-        self, ctx: "InspectionContext"
-    ) -> MemoryBreakdownResult | None:
+    def get_memory_breakdown(self, ctx: InspectionContext) -> MemoryBreakdownResult | None:
         base_url, _ = self._base_url(ctx)
         metrics_url = f"{base_url}/metrics"
 
@@ -155,9 +162,7 @@ class VLLMPlugin(RuntimePlugin):
                         ComponentName.OTHER,
                     )
                 ],
-                total=Measurement[int].unavailable(
-                    f"/metrics unreachable at {metrics_url}."
-                ),
+                total=Measurement[int].unavailable(f"/metrics unreachable at {metrics_url}."),
             )
 
         metrics = parse_prometheus(raw_text)
@@ -176,12 +181,14 @@ class VLLMPlugin(RuntimePlugin):
                 "vLLM 0.15+ reports KV usage % only — weight/KV byte totals "
                 "require embedded engine introspection (future release)."
             )
-        components.append(MemoryComponent(
-            name=ComponentName.WEIGHTS,
-            measurement=weights_m,
-            description="Model weight tensors loaded into GPU VRAM.",
-            order=COMPONENT_ORDER[ComponentName.WEIGHTS],
-        ))
+        components.append(
+            MemoryComponent(
+                name=ComponentName.WEIGHTS,
+                measurement=weights_m,
+                description="Model weight tensors loaded into GPU VRAM.",
+                order=COMPONENT_ORDER[ComponentName.WEIGHTS],
+            )
+        )
 
         # ── KV Cache ─────────────────────────────────────────────────────────
         kv_bytes = find_metric(metrics, _METRIC_KV_BYTES)
@@ -198,12 +205,14 @@ class VLLMPlugin(RuntimePlugin):
                 f"KV cache usage fraction: {self._kv_usage_pct(metrics)} "
                 "(byte totals require embedded engine introspection)."
             )
-        components.append(MemoryComponent(
-            name=ComponentName.KV_CACHE,
-            measurement=kv_m,
-            description="PagedAttention KV cache blocks allocated in GPU VRAM.",
-            order=COMPONENT_ORDER[ComponentName.KV_CACHE],
-        ))
+        components.append(
+            MemoryComponent(
+                name=ComponentName.KV_CACHE,
+                measurement=kv_m,
+                description="PagedAttention KV cache blocks allocated in GPU VRAM.",
+                order=COMPONENT_ORDER[ComponentName.KV_CACHE],
+            )
+        )
 
         # ── Activations / Workspace / Other ───────────────────────────────────
         # Filled by embedded attach (Phase 4). External /metrics has no byte totals.
@@ -221,14 +230,20 @@ class VLLMPlugin(RuntimePlugin):
                 "vLLM /metrics has no residual breakdown — use embedded attach().",
             ),
         ):
-            components.append(MemoryComponent(
-                name=name,
-                measurement=Measurement[int].unavailable(reason),
-                order=COMPONENT_ORDER[name],
-            ))
+            components.append(
+                MemoryComponent(
+                    name=name,
+                    measurement=Measurement[int].unavailable(reason),
+                    order=COMPONENT_ORDER[name],
+                )
+            )
 
         # Total — sum of available components only
-        measured = [c.measurement.value for c in components if c.measurement.is_available and c.measurement.value]
+        measured = [
+            c.measurement.value
+            for c in components
+            if c.measurement.is_available and c.measurement.value
+        ]
         total_m = (
             Measurement[int].available(sum(measured), source="Sum of measured breakdown components")
             if measured
@@ -237,9 +252,7 @@ class VLLMPlugin(RuntimePlugin):
 
         return MemoryBreakdownResult(components=components, total=total_m)
 
-    def get_runtime_details(
-        self, ctx: "InspectionContext"
-    ) -> dict[str, Measurement[str]]:
+    def get_runtime_details(self, ctx: InspectionContext) -> dict[str, Measurement[str]]:
         cmdline = ctx.process.cmdline
         details: dict[str, Measurement[str]] = {}
 
@@ -275,7 +288,7 @@ class VLLMPlugin(RuntimePlugin):
 
         return details
 
-    def get_version(self, ctx: "InspectionContext") -> Measurement[str]:
+    def get_version(self, ctx: InspectionContext) -> Measurement[str]:
         base_url, _ = self._base_url(ctx)
         # Try the /version or /v1/openai endpoint
         data = get_json(f"{base_url}/version")

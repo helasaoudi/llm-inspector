@@ -8,8 +8,12 @@ vLLM tensor-parallel jobs often use one process per GPU rank
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from llm_inspector.utils import proc as proc_utils
+
+if TYPE_CHECKING:
+    from llm_inspector.models.report import InspectionReport
 
 _WORKER_TP_RE = re.compile(r"VLLM::Worker_TP(\d+)", re.IGNORECASE)
 _ENGINE_CORE_RE = re.compile(r"VLLM::EngineCore", re.IGNORECASE)
@@ -85,3 +89,66 @@ def discover_vllm_tp_group(pid: int) -> list[int]:
             members.add(other)
 
     return sorted(members, key=tp_rank)
+
+
+def worker_tp_count(pids: list[int]) -> int:
+    """Number of Worker_TP* ranks among *pids* (EngineCore excluded)."""
+    return sum(1 for p in pids if tp_rank(p) >= 0 and tp_rank(p) < 10_000)
+
+
+def collapse_tp_reports_for_ps(
+    reports: list[InspectionReport],
+) -> list[tuple[InspectionReport, list[InspectionReport]]]:
+    """
+    Collapse EngineCore + Worker_TP* siblings into one ps row.
+
+    Returns a list of ``(representative, members)``. Non-TP processes are
+    single-member groups. Representative prefers a GPU worker with a model
+    name, else EngineCore, else the first member.
+    """
+    by_pid = {r.pid: r for r in reports}
+    seen: set[int] = set()
+    out: list[tuple[InspectionReport, list[InspectionReport]]] = []
+
+    for r in reports:
+        if r.pid in seen:
+            continue
+        if not is_vllm_tp_member(r.pid):
+            seen.add(r.pid)
+            out.append((r, [r]))
+            continue
+
+        group_pids = [p for p in discover_vllm_tp_group(r.pid) if p in by_pid]
+        members = [by_pid[p] for p in group_pids]
+        for m in members:
+            seen.add(m.pid)
+
+        if len(members) <= 1:
+            out.append((r, [r]))
+            continue
+
+        out.append((_pick_ps_representative(members), members))
+
+    return out
+
+
+def _pick_ps_representative(
+    members: list[InspectionReport],
+) -> InspectionReport:
+    """Prefer a Worker_TP with model/VRAM over EngineCore for the ps row."""
+
+    def score(r: InspectionReport) -> tuple[int, int, int]:
+        label = worker_label(r.pid)
+        is_worker = 1 if label.startswith("Worker_TP") else 0
+        has_model = 1 if r.model is not None and r.model.name.is_available else 0
+        has_vram = (
+            1
+            if (
+                r.hardware.process_vram_total_bytes is not None
+                or r.hardware.vram_used_bytes is not None
+            )
+            else 0
+        )
+        return (is_worker, has_model, has_vram)
+
+    return max(members, key=score)
