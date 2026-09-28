@@ -31,6 +31,43 @@ For the full host vs Docker test checklist, see **[INSTALL_GUIDE.md — Test on 
 
 ---
 
+## 1b. Multi-GPU vs multi-core on DGX
+
+| | Multi-GPU | Multi-core (CPU) |
+|--|-----------|------------------|
+| Meaning | Several NVIDIA GPUs / TP ranks | Host CPU cores |
+| Commands | `llminspect gpu`, `ps`, TP `inspect` | Same `inspect`; read **CPU Cores** under Hardware |
+| vLLM | `--tensor-parallel-size N` → `Worker_TP0`…`Worker_TP{N-1}` | Not related to TP |
+
+### Multi-GPU commands (host or `docker exec`)
+
+```bash
+# Host
+llminspect gpu
+llminspect ps
+llminspect inspect $(pgrep -f 'VLLM::Worker_TP0' | head -1) --verbose
+
+# Inside the inference container
+CTR=vllm-server
+docker exec "$CTR" llminspect gpu
+docker exec "$CTR" llminspect ps
+docker exec "$CTR" bash -c \
+  "llminspect inspect \$(pgrep -f 'VLLM::Worker_TP0' | head -1) --verbose"
+```
+
+One `inspect` on any Worker/EngineCore auto-groups the TP job (Process Group + per-GPU blocks + **TP Job Totals**). Use `--no-group` for a single PID.
+
+### Multi-core / CPU-only view
+
+```bash
+llminspect inspect <pid> --verbose
+# Hardware → CPU / CPU Cores / System RAM (when backend is CPU or as system fields)
+```
+
+Full display notes: **[INSTALL_GUIDE.md — Multi-GPU vs multi-core](INSTALL_GUIDE.md#multi-gpu-vs-multi-core-not-the-same)**.
+
+---
+
 ## 2. External inspection (any repo, no code changes)
 
 Works for Ollama, vLLM, HuggingFace, FastAPI, custom PyTorch — anything on GPU.

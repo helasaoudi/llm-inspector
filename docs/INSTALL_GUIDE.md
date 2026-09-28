@@ -101,25 +101,103 @@ docker exec "$CTR" llminspect inspect <pid-from-ps> --verbose
 | External only | Process + Hardware GPU Used; Model may fill from APIs; Allocated / Weights often `Unavailable` |
 | + `attach()` / plugin | Allocated / Reserved / Peak, Weights / KV / Workspace, Model Details, Optimization Analysis |
 
-### Multi-GPU (v0.7+)
+### Multi-GPU vs multi-core (not the same)
+
+| | Multi-GPU | Multi-core (CPU) |
+|--|-----------|------------------|
+| Meaning | Several NVIDIA GPUs (0, 1, …) | CPU physical / logical cores |
+| Where it shows | `gpu`, `ps` **GPUs** column, TP Process Group, per-worker VRAM | Hardware → **CPU Cores** (e.g. `8P / 16L`) |
+| Typical setup | `vllm serve … --tensor-parallel-size 2` | Always present; Ollama/CPU inference on macOS/Linux |
+
+CPU core count does **not** mean “2 GPUs”. Tensor parallel is multi-**GPU**.
+
+### Multi-GPU commands (v0.7+)
+
+**Machine overview**
 
 ```bash
-llminspect gpu          # all real NVML devices (Total / Used / Free / Util)
-llminspect ps           # GPUs column: e.g. 0 or 0,1,2,3
+llminspect gpu
+# GPUs  2 devices (CUDA)
+#   IDX   Name              Total    Used     Free    Util
+#   0     …                 12.0 GB  7.2 GB   4.4 GB  0%
+#   1     …                 12.0 GB  7.2 GB   4.4 GB  0%
+```
+
+**Process list (which GPUs each PID uses)**
+
+```bash
+llminspect ps
+#   PID      Runtime   Model         GPUs   GPU%   VRAM
+#   …        vLLM      …             0      0%     7.2 GB
+#   …        vLLM      …             1      0%     7.2 GB
+```
+
+**Inspect one PID that spans several GPUs** (NVML shows the same PID on multiple devices):
+
+```bash
 llminspect inspect <pid> --verbose
+# Process / Model / Runtime once
+# then one Hardware/Memory block per attached GPU
 ```
 
-- Process / Model / Runtime appear **once** (process-level).
-- Each GPU the PID uses gets its own block: device VRAM, util, process VRAM (NVML).
-- Per-GPU Allocated / Reserved / Peak appear only when `attach()` can measure them via `torch.cuda.memory_*(device)` inside the inference process — otherwise `Unavailable`.
-- No projected per-GPU Weights/KV splits; memory breakdown stays process-level and measured.
-
-**vLLM tensor-parallel jobs** often use one process per GPU (`VLLM::Worker_TP0`, `Worker_TP1`, …). Inspecting **any** member PID auto-groups siblings:
+**vLLM tensor-parallel job** (one process per GPU: `Worker_TP0`, `Worker_TP1`, …):
 
 ```bash
-llminspect inspect 1538888 --verbose   # also pulls Worker_TP1 if same parent
-llminspect inspect 1538888 --no-group  # single PID only
+# start (example)
+export LLM_INSPECTOR_ATTACH=1   # optional: deep Weights/KV via plugin + attach
+vllm serve <model> --tensor-parallel-size 2 --port 8000
+
+# inspect the whole TP job in one command (any member PID)
+llminspect inspect $(pgrep -f 'VLLM::Worker_TP0' | head -1) --verbose
+# or:
+llminspect inspect $(pgrep -f 'VLLM::EngineCore' | head -1) --verbose
+
+# single PID only (no sibling group)
+llminspect inspect <pid> --no-group --verbose
 ```
+
+Expected display for TP=2:
+
+```text
+Process Group (vLLM TP)
+  EngineCore     GPU(s) —
+  Worker_TP0     GPU(s) 0
+  Worker_TP1     GPU(s) 1
+
+Model … (once, often from /v1/models)
+
+── Worker_TP0 · GPU 0 ──   Hardware / Memory / Breakdown …
+── Worker_TP1 · GPU 1 ──   Hardware / Memory / Breakdown …
+
+TP Job Totals (Measured)
+  Process VRAM Total   …
+  GPUs used            0,1
+```
+
+- Per-GPU Allocated / Reserved / Peak / Weights / KV need embedded `attach()` (or plugin) inside the workers.
+- Without attach, NVML VRAM per GPU + job totals still work (measured).
+
+### Multi-core (CPU) commands
+
+```bash
+# CPU / system view (no NVIDIA, or macOS Metal/Ollama)
+llminspect gpu          # may print: No GPU devices detected.
+llminspect ps           # Backend CPU; RAM column instead of GPUs/VRAM
+llminspect inspect $(pgrep -f "ollama serve" | head -1) --verbose
+```
+
+In the report, look under **Hardware**:
+
+```text
+Backend               CPU
+CPU                   Apple M3 / Intel …
+CPU Cores             8P / 16L
+CPU Utilization       …
+System RAM Total      …
+System RAM Used       …
+```
+
+That is multi-**core** info, not multi-GPU.
 
 ---
 
