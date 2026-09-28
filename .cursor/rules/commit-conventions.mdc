@@ -1,0 +1,98 @@
+---
+description: Conventional commit message rules (type, scope, issues) + enforcement
+alwaysApply: true
+---
+
+# Commit message conventions
+
+Use [Conventional Commits](https://www.conventionalcommits.org/). Every commit message must follow:
+
+```text
+<type>(optional-scope): <short summary>
+
+Optional body explaining why.
+
+Optional footer(s):
+Fixes #123
+Refs #456
+```
+
+## Enforcement (do not bypass)
+
+This repo **forces** Conventional Commits via:
+
+1. **Local git hook** — `pre-commit` `commit-msg` stage (Husky-equivalent for Python)
+2. **CI** — `.github/workflows/commit-lint.yml` on every PR
+
+Setup after clone:
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+pre-commit install --hook-type commit-msg
+```
+
+Never use `--no-verify` / `--no-gpg-sign` to skip hooks unless the user explicitly asks.
+
+## Types (required)
+
+| Type | Use when |
+|------|----------|
+| `feat` | New user-facing feature or capability |
+| `fix` | Bug fix |
+| `docs` | Docs only (README, guides, comments-as-docs) |
+| `test` | Adding or fixing tests only |
+| `refactor` | Code change that is not a feat or fix |
+| `perf` | Performance improvement |
+| `chore` | Build, tooling, deps, version bump with no behavior change |
+| `ci` | CI / GitHub Actions / publish workflow |
+| `style` | Formatting only (no logic change) |
+| `build` | Build system / packaging |
+| `revert` | Revert a previous commit |
+
+Do **not** use vague subjects like `update`, `changes`, `wip`, or `fix stuff`.
+
+## Summary line
+
+- Imperative, lowercase after the type: `feat: add multi-GPU inspect panels`
+- Max ~72 characters for the first line
+- No trailing period on the subject line
+
+## Issues / PRs (required when applicable)
+
+- Closing a tracked issue: `Fixes #12` or `Closes #12` in the footer
+- Related but not closing: `Refs #12`
+- Multiple issues: `Fixes #12, #15`
+- If there is **no** issue, omit the footer — do not invent ticket numbers
+
+Examples:
+
+```text
+feat: add multi-GPU hardware attachments to inspect
+
+Report every NVML GPU a process uses; per-device torch metrics only via attach.
+
+Fixes #42
+```
+
+```text
+fix: sum process VRAM across all attached GPUs
+
+Refs #42
+```
+
+```text
+ci: run pytest on Python 3.11 and 3.12
+
+Fixes #2
+```
+
+```text
+docs: document multi-GPU gpu/ps/inspect behavior
+```
+
+## This repo
+
+- Prefer committing feature work to `dev` (PR into `dev`); release from `main`
+- Keep commits focused: one logical change per commit when practical
+- Never put secrets, tokens, or `.env` files in commits

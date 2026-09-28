@@ -1,0 +1,26 @@
+name: Commit message
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  conventional-commits:
+    name: Conventional commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR commits
+        uses: webiny/action-conventional-commits@v1.3.0
+        with:
+          # Same types as .pre-commit-config.yaml / commit-conventions rule
+          # No spaces after commas — the action does not trim type names
+          allowed-commit-types: feat,fix,docs,test,ci,refactor,perf,chore,style,build,revert

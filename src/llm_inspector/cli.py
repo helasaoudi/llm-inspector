@@ -21,6 +21,7 @@ app = typer.Typer(
 
 console = Console()
 
+
 @app.command("ps")
 def cmd_ps() -> None:
     """List all GPU-attached LLM inference processes."""
@@ -49,26 +50,46 @@ def cmd_inspect(
         bool,
         typer.Option("--verbose", "-v", help="Show data source for every field."),
     ] = False,
+    group: Annotated[
+        bool,
+        typer.Option(
+            "--group/--no-group",
+            help=(
+                "For vLLM TP jobs, inspect all Worker_TP*/EngineCore siblings "
+                "together (default: on)."
+            ),
+        ),
+    ] = True,
 ) -> None:
-    """Inspect a single LLM inference process."""
+    """Inspect an LLM inference process (auto-groups vLLM TP workers)."""
     from llm_inspector.inspector.core import Inspector  # noqa: PLC0415
-    from llm_inspector.ui.panels import render_full_report  # noqa: PLC0415
+    from llm_inspector.ui.panels import (  # noqa: PLC0415
+        render_full_report,
+        render_tp_group_report,
+    )
+    from llm_inspector.utils.vllm_group import discover_vllm_tp_group  # noqa: PLC0415
 
     inspector = Inspector()
+    pids = discover_vllm_tp_group(pid) if group else [pid]
+
     try:
-        report = inspector.inspect(pid=pid, collect_filter=collect)
+        reports = [inspector.inspect(pid=p, collect_filter=collect) for p in pids]
     except RuntimeError as exc:
         console.print(f"[red]Error:[/red] {exc}")
         raise typer.Exit(1) from exc
 
-    render_full_report(report, console, collect_filter=collect, verbose=verbose)
+    if len(reports) == 1:
+        render_full_report(reports[0], console, collect_filter=collect, verbose=verbose)
+    else:
+        render_tp_group_report(reports, console, collect_filter=collect, verbose=verbose)
 
 
 @app.command("gpu")
 def cmd_gpu() -> None:
     """Show GPU device summary (VRAM, utilisation, driver version)."""
-    from rich.table import Table  # noqa: PLC0415
     from rich import box as rbox  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
     from llm_inspector.backends.registry import BackendRegistry  # noqa: PLC0415
     from llm_inspector.ui.format import fmt_bytes  # noqa: PLC0415
 
@@ -80,21 +101,29 @@ def cmd_gpu() -> None:
         console.print("[dim]No GPU devices detected.[/dim]")
         return
 
+    n = len(devices)
+    console.print(f"[bold]GPUs[/bold]  {n} device{'s' if n != 1 else ''} ({backend.kind.value})")
+
     t = Table(box=rbox.SIMPLE_HEAD, header_style="bold", padding=(0, 1))
-    t.add_column("GPU", style="cyan", min_width=4)
+    t.add_column("IDX", style="cyan", min_width=3)
     t.add_column("Name")
-    t.add_column("VRAM Used", justify="right")
-    t.add_column("VRAM Total", justify="right")
-    t.add_column("GPU Util", justify="right")
+    t.add_column("Total", justify="right")
+    t.add_column("Used", justify="right")
+    t.add_column("Free", justify="right")
+    t.add_column("Util", justify="right")
     t.add_column("Driver")
     t.add_column("CUDA")
 
     for d in devices:
+        free = None
+        if d.vram_total_bytes is not None and d.vram_used_bytes is not None:
+            free = max(0, d.vram_total_bytes - d.vram_used_bytes)
         t.add_row(
             str(d.index),
             d.name,
-            fmt_bytes(d.vram_used_bytes),
             fmt_bytes(d.vram_total_bytes),
+            fmt_bytes(d.vram_used_bytes),
+            fmt_bytes(free),
             f"{d.gpu_utilization_pct}%" if d.gpu_utilization_pct is not None else "—",
             d.driver_version or "—",
             d.cuda_version or "—",
@@ -102,12 +131,18 @@ def cmd_gpu() -> None:
 
     console.print(t)
 
+    driver = devices[0].driver_version or backend.driver_version()
+    cuda = devices[0].cuda_version or backend.runtime_version()
+    if driver or cuda:
+        console.print(f"[dim]Driver {driver or '—'} · CUDA {cuda or '—'}[/dim]")
+
 
 @app.command("runtimes")
 def cmd_runtimes() -> None:
     """List registered runtime plugins and their capabilities."""
-    from rich.table import Table  # noqa: PLC0415
     from rich import box as rbox  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
     from llm_inspector.inspector.core import Inspector  # noqa: PLC0415
 
     inspector = Inspector()

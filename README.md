@@ -124,17 +124,30 @@ pip install -e ".[torch]"
 ## Try it
 
 ```bash
+llminspect gpu
 llminspect ps
-llminspect inspect <pid>
 llminspect inspect <pid> --verbose
 ```
 
-With Ollama on the host (no Docker):
+### Multi-GPU (vLLM tensor parallel)
+
+```bash
+# after: vllm serve <model> --tensor-parallel-size 2 --port 8000
+llminspect gpu
+llminspect ps
+llminspect inspect $(pgrep -f 'VLLM::Worker_TP0' | head -1) --verbose
+# inspects Worker_TP0 + Worker_TP1 (+ EngineCore) in one report
+```
+
+### Multi-core / CPU (e.g. Ollama on macOS)
 
 ```bash
 ollama run llama3
-llminspect inspect $(pgrep -f "ollama serve") --verbose
+llminspect inspect $(pgrep -f "ollama serve" | head -1) --verbose
+# Hardware shows CPU Cores / System RAM — not GPU ids
 ```
+
+Multi-GPU ≠ multi-core. Details: [Install guide](docs/INSTALL_GUIDE.md#multi-gpu-vs-multi-core-not-the-same).
 
 ---
 
@@ -149,8 +162,8 @@ macOS · Linux · any NVIDIA GPU server (including DGX)
 
 | Guide | When to read it |
 |-------|-----------------|
-| **[Install & Integration](docs/INSTALL_GUIDE.md)** | PyPI install, test on an inference service, Docker, `attach()`, troubleshooting |
-| [DGX notes](docs/DGX_GUIDE.md) | Extra detail from a DGX Spark inference-service setup |
+| **[Install & Integration](docs/INSTALL_GUIDE.md)** | PyPI install, multi-GPU / multi-core commands, Docker, `attach()`, troubleshooting |
+| [DGX notes](docs/DGX_GUIDE.md) | DGX + Docker TP inspect examples |
 
 ---
 

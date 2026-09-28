@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from llm_inspector.models.enums import BackendKind, RuntimeKind
 from llm_inspector.models.measurement import Measurement
 
-
 # ── Phase A results — primitive types ─────────────────────────────────────────
 
 
@@ -65,12 +64,40 @@ class ProcessResult(BaseModel):
         return f"{secs}s"
 
 
+class GpuAttachment(BaseModel):
+    """
+    One GPU this process is attached to — NVML-measured only.
+
+    ``vram_*`` / ``gpu_utilization_pct`` are device-level.
+    ``process_vram_bytes`` is this PID's memory on that GPU.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int
+    name: str | None = None
+    vram_total_bytes: int | None = None
+    vram_used_bytes: int | None = None
+    gpu_utilization_pct: int | None = None
+    process_vram_bytes: int | None = None
+
+    @property
+    def vram_free_bytes(self) -> int | None:
+        if self.vram_total_bytes is None or self.vram_used_bytes is None:
+            return None
+        return max(0, self.vram_total_bytes - self.vram_used_bytes)
+
+
 class HardwareResult(BaseModel):
     """
     Hardware device snapshot for the GPU (or CPU fallback) running inference.
 
     Collected by HardwareCollector in Phase A via the HardwareBackend
     abstraction (NVML for CUDA, sysfs for ROCm, IOKit for Metal).
+
+    Single-device fields (``device_index``, ``gpu_name``, …) describe the
+    primary GPU (first attachment) for backward compatibility.
+    ``devices`` lists every GPU this PID is attached to (1…N).
 
     GPU fields are None on CPU-only machines.
     CPU/system fields are always populated via psutil.
@@ -82,13 +109,16 @@ class HardwareResult(BaseModel):
     backend: BackendKind
     device_index: int | None = None
 
-    # GPU fields — populated on CUDA/ROCm/Metal backends
+    # GPU fields — populated on CUDA/ROCm/Metal backends (primary device)
     gpu_name: str | None = None
     vram_total_bytes: int | None = None
     vram_used_bytes: int | None = None
     gpu_utilization_pct: int | None = None
     driver_version: str | None = None
     cuda_version: str | None = None
+
+    # All GPUs this process touches (NVML). Empty on CPU-only.
+    devices: list[GpuAttachment] = Field(default_factory=list)
 
     # CPU/system fields — always populated
     cpu_name: str | None = None
@@ -106,8 +136,42 @@ class HardwareResult(BaseModel):
     def vram_used_gb(self) -> float | None:
         return self.vram_used_bytes / (1024**3) if self.vram_used_bytes else None
 
+    @property
+    def gpu_indices(self) -> list[int]:
+        return [d.index for d in self.devices]
+
+    @property
+    def process_vram_total_bytes(self) -> int | None:
+        """Sum of measured per-GPU process VRAM (NVML), or None if unknown."""
+        values = [d.process_vram_bytes for d in self.devices if d.process_vram_bytes is not None]
+        if not values:
+            return None
+        return sum(values)
+
 
 # ── Phase B results — Measurement[T] types ────────────────────────────────────
+
+
+class GpuDeviceMemory(BaseModel):
+    """
+    Per-device PyTorch allocator metrics for one CUDA device.
+
+    Only populated when embedded ``attach()`` runs inside the target
+    process and can call ``torch.cuda.memory_* (device)``. Never estimated.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    device_index: int
+    allocated: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    reserved: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
+    peak: Measurement[int] = Field(
+        default_factory=lambda: Measurement.unavailable("Not collected"),
+    )
 
 
 class MemoryResult(BaseModel):
@@ -119,6 +183,7 @@ class MemoryResult(BaseModel):
       - gpu_used comes from NVML (always available)
       - gpu_allocated / gpu_reserved come from PyTorch (requires plugin)
       - peak comes from PyTorch max tracker (requires plugin)
+      - devices: per-GPU torch metrics when attach supports them
     All values are in bytes.
     """
 
@@ -143,6 +208,10 @@ class MemoryResult(BaseModel):
     peak: Measurement[int] = Field(
         default_factory=lambda: Measurement.unavailable("Not collected"),
         description="Peak GPU memory — torch.cuda.max_memory_allocated()",
+    )
+    devices: list[GpuDeviceMemory] = Field(
+        default_factory=list,
+        description="Per-device torch allocator metrics (embedded attach only).",
     )
 
 

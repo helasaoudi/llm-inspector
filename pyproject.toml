@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-inspector"
-version = "0.6.0"
+version = "0.7.0"
 description = "The htop for LLM inference. Measured. Not guessed."
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,6 +41,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    "pre-commit>=3.7",
 ]
 
 [project.scripts]

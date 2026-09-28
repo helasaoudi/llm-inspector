@@ -36,65 +36,118 @@ def collect_memory_embedded(
     Snapshot memory metrics from inside the process.
 
     Combines:
-      - torch.cuda.memory_stats() (on demand)
+      - torch.cuda.memory_* per visible device (on demand)
       - StreamingMetrics peak counters (continuous)
+
+    Per-device queries use ``torch.cuda.memory_allocated(device)`` etc.
+    These are only valid inside the inference process (attach). Process-level
+    totals are the measured sum across visible devices — never estimated.
     """
     del request  # memory collector has no options yet
+    from llm_inspector.models.results import GpuDeviceMemory  # noqa: PLC0415
 
     gpu_allocated = Measurement[int].unavailable("CUDA not available or torch not installed.")
     gpu_reserved = Measurement[int].unavailable("CUDA not available or torch not installed.")
     peak = Measurement[int].unavailable("CUDA not available or torch not installed.")
+    device_rows: list[GpuDeviceMemory] = []
 
     if _torch_available():
         import torch  # noqa: PLC0415
 
-        allocated = torch.cuda.memory_allocated()
-        reserved = torch.cuda.memory_reserved()
-        max_alloc = torch.cuda.max_memory_allocated()
+        n_devices = int(torch.cuda.device_count())
+        total_allocated = 0
+        total_reserved = 0
+        total_peak = 0
+        any_device = False
 
-        gpu_allocated = Measurement[int].available(
-            allocated,
-            source="torch.cuda.memory_allocated()",
-        )
-        gpu_reserved = Measurement[int].available(
-            reserved,
-            source="torch.cuda.memory_reserved()",
-        )
+        for device in range(n_devices):
+            try:
+                allocated = int(torch.cuda.memory_allocated(device))
+                reserved = int(torch.cuda.memory_reserved(device))
+                max_alloc = int(torch.cuda.max_memory_allocated(device))
+            except Exception as exc:  # noqa: BLE001
+                device_rows.append(
+                    GpuDeviceMemory(
+                        device_index=device,
+                        allocated=Measurement[int].unavailable(
+                            f"torch.cuda.memory_allocated({device}) failed: {exc}"
+                        ),
+                        reserved=Measurement[int].unavailable(
+                            f"torch.cuda.memory_reserved({device}) failed: {exc}"
+                        ),
+                        peak=Measurement[int].unavailable(
+                            f"torch.cuda.max_memory_allocated({device}) failed: {exc}"
+                        ),
+                    )
+                )
+                continue
 
-        # Peak: prefer streaming counter (captures peaks between inspects),
-        # fall back to torch max tracker
-        stream_peak = streaming.peak_allocated_bytes
-        if stream_peak > 0:
-            peak_val = max(stream_peak, max_alloc)
-            peak = Measurement[int].available(
-                peak_val,
-                source="StreamingMetrics.peak_allocated_bytes (max with torch.cuda.max_memory_allocated())",
-            )
-        elif max_alloc > 0:
-            peak = Measurement[int].available(
-                max_alloc,
-                source="torch.cuda.max_memory_allocated()",
-            )
-        else:
-            peak = Measurement[int].unavailable(
-                "No peak recorded yet — run inference to populate streaming counters."
+            any_device = True
+            total_allocated += allocated
+            total_reserved += reserved
+            total_peak = max(total_peak, max_alloc)
+
+            device_rows.append(
+                GpuDeviceMemory(
+                    device_index=device,
+                    allocated=Measurement[int].available(
+                        allocated,
+                        source=f"torch.cuda.memory_allocated({device})",
+                    ),
+                    reserved=Measurement[int].available(
+                        reserved,
+                        source=f"torch.cuda.memory_reserved({device})",
+                    ),
+                    peak=Measurement[int].available(
+                        max_alloc,
+                        source=f"torch.cuda.max_memory_allocated({device})",
+                    )
+                    if max_alloc > 0
+                    else Measurement[int].unavailable(f"No peak recorded yet on device {device}."),
+                )
             )
 
-        # Update streaming counters with current values
-        streaming.record_allocated(allocated)
-        streaming.record_reserved(reserved)
+        if any_device:
+            gpu_allocated = Measurement[int].available(
+                total_allocated,
+                source=(
+                    f"sum of torch.cuda.memory_allocated(device) for device in 0..{n_devices - 1}"
+                ),
+            )
+            gpu_reserved = Measurement[int].available(
+                total_reserved,
+                source=(
+                    f"sum of torch.cuda.memory_reserved(device) for device in 0..{n_devices - 1}"
+                ),
+            )
+
+            stream_peak = streaming.peak_allocated_bytes
+            if stream_peak > 0 or total_peak > 0:
+                peak_val = max(stream_peak, total_peak)
+                peak = Measurement[int].available(
+                    peak_val,
+                    source=(
+                        "max(StreamingMetrics.peak_allocated_bytes, "
+                        "sum/max of torch.cuda.max_memory_allocated(device))"
+                    ),
+                )
+            else:
+                peak = Measurement[int].unavailable(
+                    "No peak recorded yet — run inference to populate streaming counters."
+                )
+
+            # Update streaming with process-wide allocated/reserved totals
+            streaming.record_allocated(total_allocated)
+            streaming.record_reserved(total_reserved)
 
     # process_ram and gpu_used are filled by external collectors (psutil/NVML)
     result = MemoryResult(
-        process_ram=Measurement[int].unavailable(
-            "process_ram collected externally via psutil."
-        ),
-        gpu_used=Measurement[int].unavailable(
-            "gpu_used collected externally via NVML."
-        ),
+        process_ram=Measurement[int].unavailable("process_ram collected externally via psutil."),
+        gpu_used=Measurement[int].unavailable("gpu_used collected externally via NVML."),
         gpu_allocated=gpu_allocated,
         gpu_reserved=gpu_reserved,
         peak=peak,
+        devices=device_rows,
     )
     return model_to_dict(result)
 
@@ -269,9 +322,7 @@ def collect_memory_breakdown_embedded(
                     order=COMPONENT_ORDER[ComponentName.OTHER],
                 ),
             ],
-            total=_sum_total(
-                [activations, workspace, other]
-            ),
+            total=_sum_total([activations, workspace, other]),
         )
         return model_to_dict(result)
 
@@ -279,17 +330,11 @@ def collect_memory_breakdown_embedded(
 
     weights_fn = getattr(adapter, "weights_bytes", None)
     weights = (
-        weights_fn(ctx)
-        if callable(weights_fn)
-        else _unavail("Weights not exposed by adapter.")
+        weights_fn(ctx) if callable(weights_fn) else _unavail("Weights not exposed by adapter.")
     )
 
     kv_fn = getattr(adapter, "kv_cache_bytes", None)
-    kv = (
-        kv_fn(ctx)
-        if callable(kv_fn)
-        else _unavail("KV cache not exposed by adapter.")
-    )
+    kv = kv_fn(ctx) if callable(kv_fn) else _unavail("KV cache not exposed by adapter.")
 
     workspace, activations, other = _phase4_residuals(
         weights=weights if weights.is_available else None,
@@ -346,9 +391,7 @@ def _phase4_residuals(
 ) -> tuple[Measurement[int], Measurement[int], Measurement[int]]:
     """Compute Workspace, Activations, Other from torch + streaming baseline."""
     if not _torch_available():
-        unavail = Measurement[int].unavailable(
-            "CUDA not available or torch not installed."
-        )
+        unavail = Measurement[int].unavailable("CUDA not available or torch not installed.")
         return unavail, unavail, unavail
 
     import torch  # noqa: PLC0415
@@ -368,10 +411,7 @@ def _phase4_residuals(
     if streaming.baseline_allocated_bytes is not None:
         current_act = streaming.current_activation_bytes(allocated)
         peak_act = max(streaming.peak_activation_bytes, current_act)
-        source = (
-            "allocated − attach baseline "
-            f"(current; peak since attach: {peak_act}"
-        )
+        source = f"allocated − attach baseline (current; peak since attach: {peak_act}"
         if streaming.activation_hooks_enabled:
             source += "; forward hooks enabled"
         source += ")"
@@ -390,9 +430,7 @@ def _phase4_residuals(
         other_val = max(0, allocated - int(w_val) - int(kv_val) - act_for_residual)
         other = Measurement[int].available(
             other_val,
-            source=(
-                "torch.cuda.memory_allocated() − weights − KV − current activations"
-            ),
+            source=("torch.cuda.memory_allocated() − weights − KV − current activations"),
         )
     elif w_val is not None:
         other_val = max(0, allocated - int(w_val) - act_for_residual)
@@ -409,13 +447,9 @@ def _phase4_residuals(
 
 
 def _sum_total(measurements: list[Measurement[int]]) -> Measurement[int]:
-    measured = [
-        m.value for m in measurements if m.is_available and m.value is not None
-    ]
+    measured = [m.value for m in measurements if m.is_available and m.value is not None]
     if not measured:
-        return Measurement[int].unavailable(
-            "No breakdown components measurable from adapter."
-        )
+        return Measurement[int].unavailable("No breakdown components measurable from adapter.")
     return Measurement[int].available(
         sum(measured),
         source="Sum of measured embedded breakdown components",

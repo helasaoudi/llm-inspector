@@ -7,11 +7,26 @@ the --collect flag can selectively render only matching sections.
 
 from __future__ import annotations
 
-from rich import box
+from datetime import UTC
+
 from rich.console import Console
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+
+from llm_inspector.models.measurement import Measurement
+from llm_inspector.models.report import InspectionReport
+from llm_inspector.ui.format import (
+    fmt_bytes,
+    fmt_measurement_bytes,
+    fmt_measurement_str,
+    fmt_uptime,
+    truncate,
+)
+
+_SECTION_STYLE = "bold white"
+_LABEL_STYLE = "dim"
+_UNAVAIL_STYLE = "dim italic"
 
 
 def _source(val_str: str, source: str) -> Text:
@@ -29,21 +44,6 @@ def _reason(reason: str) -> Text:
     t.append(f"  ({reason})", style="dim")
     return t
 
-from llm_inspector.models.measurement import Measurement
-from llm_inspector.models.report import InspectionReport
-from llm_inspector.ui.format import (
-    fmt_bytes,
-    fmt_measurement_bytes,
-    fmt_measurement_int,
-    fmt_measurement_str,
-    fmt_uptime,
-    truncate,
-)
-
-_SECTION_STYLE = "bold white"
-_LABEL_STYLE = "dim"
-_UNAVAIL_STYLE = "dim italic"
-
 
 def _fmt_expiry(iso_str: str) -> str:
     """
@@ -53,12 +53,14 @@ def _fmt_expiry(iso_str: str) -> str:
     Falls back to the raw string if parsing fails.
     """
     try:
-        from datetime import datetime, timezone  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+
         from dateutil import parser as dtparser  # type: ignore[import-untyped]  # noqa: PLC0415
+
         expiry = dtparser.parse(iso_str)
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
+            expiry = expiry.replace(tzinfo=UTC)
         delta = expiry - now
         secs = int(delta.total_seconds())
         if secs < 0:
@@ -122,13 +124,19 @@ def render_process_section(
     raw_cmd = report.process.cmdline_str or ""
     cmd = raw_cmd if verbose else truncate(raw_cmd, 120)
     t.add_row("Command", cmd or "Unavailable")
-    t.add_row("Started", fmt_uptime(report.process.uptime_seconds) + " ago"
-              if report.process.uptime_seconds else "Unavailable")
+    t.add_row(
+        "Started",
+        fmt_uptime(report.process.uptime_seconds) + " ago"
+        if report.process.uptime_seconds
+        else "Unavailable",
+    )
     console.print(t)
     console.print()
 
 
-def render_hardware_section(report: InspectionReport, console: Console) -> None:
+def render_hardware_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
 
     console.print(Rule("Hardware", style=_SECTION_STYLE, align="left"))
@@ -153,23 +161,106 @@ def render_hardware_section(report: InspectionReport, console: Console) -> None:
         t.add_row("CPU Utilization", _val(cpu_util))
         t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
         t.add_row("System RAM Used", _val(fmt_bytes(hw.system_ram_used_bytes)))
-    else:
-        # GPU backend — show GPU fields
-        t.add_row("GPU", _val(hw.gpu_name or "Unavailable"))
+        console.print(t)
+        console.print()
+        return
+
+    # GPU backend
+    attachments = hw.devices
+    if len(attachments) <= 1:
+        # Single-GPU path — same shape as before (+ free + index)
+        gpu_label = hw.gpu_name or "Unavailable"
+        if hw.device_index is not None and hw.gpu_name:
+            gpu_label = f"{hw.gpu_name}  (GPU {hw.device_index})"
+        t.add_row("GPU", _val(gpu_label))
         t.add_row("Driver", _val(hw.driver_version or "Unavailable"))
         t.add_row("CUDA", _val(hw.cuda_version or "Unavailable"))
         t.add_row("VRAM Total", _val(fmt_bytes(hw.vram_total_bytes)))
         t.add_row("VRAM Used", _val(fmt_bytes(hw.vram_used_bytes)))
+        free = attachments[0].vram_free_bytes if attachments else None
+        if free is None and hw.vram_total_bytes is not None and hw.vram_used_bytes is not None:
+            free = max(0, hw.vram_total_bytes - hw.vram_used_bytes)
+        t.add_row("VRAM Free", _val(fmt_bytes(free)))
         gpu_util = (
-            f"{hw.gpu_utilization_pct}%"
-            if hw.gpu_utilization_pct is not None
-            else "Unavailable"
+            f"{hw.gpu_utilization_pct}%" if hw.gpu_utilization_pct is not None else "Unavailable"
         )
         t.add_row("GPU Utilization", _val(gpu_util))
         t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
+        console.print(t)
+        console.print()
+        return
 
+    # Multi-GPU — process-level summary, then one measured block per GPU
+    ids = ",".join(str(d.index) for d in attachments)
+    t.add_row("GPUs", _val(f"{len(attachments)} devices  ({ids})"))
+    t.add_row("Driver", _val(hw.driver_version or "Unavailable"))
+    t.add_row("CUDA", _val(hw.cuda_version or "Unavailable"))
+    t.add_row("Process VRAM Total", _val(fmt_bytes(hw.process_vram_total_bytes)))
+    if verbose:
+        t.add_row(
+            "",
+            Text(
+                "  [NVML sum of process usedGpuMemory across attached GPUs]",
+                style="dim",
+            ),
+        )
+    t.add_row("System RAM Total", _val(fmt_bytes(hw.system_ram_total_bytes)))
     console.print(t)
     console.print()
+
+    torch_by_index = {}
+    if report.memory is not None:
+        torch_by_index = {d.device_index: d for d in report.memory.devices}
+
+    for att in attachments:
+        console.print(Rule(f"GPU {att.index}", style=_SECTION_STYLE, align="left"))
+        gt = _kv_table()
+        gt.add_row("Name", _val(att.name or "Unavailable"))
+        device_line = (
+            f"{fmt_bytes(att.vram_used_bytes)} / {fmt_bytes(att.vram_total_bytes)}"
+            if att.vram_total_bytes is not None
+            else fmt_bytes(att.vram_used_bytes)
+        )
+        free_s = fmt_bytes(att.vram_free_bytes)
+        util_s = (
+            f"{att.gpu_utilization_pct}%" if att.gpu_utilization_pct is not None else "Unavailable"
+        )
+        gt.add_row("Device VRAM", _val(f"{device_line}  (free {free_s})"))
+        gt.add_row("GPU Utilization", _val(util_s))
+        gt.add_row("Process VRAM", _val(fmt_bytes(att.process_vram_bytes)))
+        if verbose:
+            gt.add_row(
+                "",
+                Text(
+                    f"  [NVML compute process on GPU {att.index}]",
+                    style="dim",
+                ),
+            )
+
+        torch_m = torch_by_index.get(att.index)
+        if torch_m is not None:
+            for label, meas in (
+                ("GPU Allocated", torch_m.allocated),
+                ("GPU Reserved", torch_m.reserved),
+                ("Peak GPU", torch_m.peak),
+            ):
+                val_str = fmt_measurement_bytes(meas)
+                if verbose and meas.is_available and meas.source:
+                    gt.add_row(label, _source(val_str, meas.source))
+                elif verbose and not meas.is_available and meas.reason:
+                    gt.add_row(label, _reason(meas.reason))
+                else:
+                    gt.add_row(label, _val(val_str))
+        elif verbose:
+            gt.add_row(
+                "GPU Allocated",
+                _reason(
+                    "Per-device torch metrics require embedded attach() in the inference process."
+                ),
+            )
+
+        console.print(gt)
+        console.print()
 
 
 def render_model_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
@@ -183,6 +274,8 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
     t = _kv_table()
 
     def mrow_str(label: str, meas: Measurement[str]) -> None:
+        if not meas.is_available and not verbose:
+            return
         val_str = fmt_measurement_str(meas)
         if verbose and meas.is_available and meas.source:
             t.add_row(label, _source(val_str, meas.source))
@@ -192,7 +285,11 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
             t.add_row(label, _val(val_str))
 
     def mrow_int(label: str, meas: Measurement[int], formatter=str) -> None:
-        val_str = formatter(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
+        if not meas.is_available and not verbose:
+            return
+        val_str = (
+            formatter(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
+        )
         if verbose and meas.is_available and meas.source:
             t.add_row(label, _source(val_str, meas.source))
         elif verbose and not meas.is_available and meas.reason:
@@ -217,6 +314,7 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         raw_hint = ""
         if m.parameter_count.reason and "parameter_size='" in m.parameter_count.reason:
             import re  # noqa: PLC0415
+
             match = re.search(r"parameter_size='([^']+)'", m.parameter_count.reason)
             if match:
                 raw_hint = match.group(1)
@@ -227,15 +325,17 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
             t.add_row("Parameters", label_val)
         elif verbose and m.parameter_count.reason:
             t.add_row("Parameters", _reason(m.parameter_count.reason))
-        else:
-            t.add_row("Parameters", _val("Unavailable"))
 
     mrow_int("Context Length", m.context_length, lambda n: f"{n:,} tokens")
     mrow_int("Tensor Parallel", m.tensor_parallel, lambda n: f"×{n}")
     mrow_int("Pipeline Parallel", m.pipeline_parallel, lambda n: f"×{n}")
 
-    console.print(t)
-    console.print()
+    if t.row_count:
+        console.print(t)
+        console.print()
+    elif verbose:
+        console.print("[dim]  No model fields available.[/dim]")
+        console.print()
 
     # Phase 5 — tokenizer / architecture / module buckets
     t2 = _kv_table()
@@ -246,11 +346,7 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         if not meas.is_available and not verbose:
             return
         has_details = True
-        val_str = (
-            str(meas.value)
-            if meas.is_available and meas.value is not None
-            else "Unavailable"
-        )
+        val_str = str(meas.value) if meas.is_available and meas.value is not None else "Unavailable"
         if verbose and meas.is_available and meas.source:
             t2.add_row(label, _source(val_str, meas.source))
         elif verbose and not meas.is_available and meas.reason:
@@ -299,13 +395,16 @@ def render_model_section(report: InspectionReport, console: Console, verbose: bo
         console.print()
 
 
-def render_memory_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
+def render_memory_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
 
     console.print(Rule("Memory", style=_SECTION_STYLE, align="left"))
     if report.memory is None:
-        console.print("[dim]  Memory data unavailable.[/dim]")
-        console.print()
+        if verbose:
+            console.print("[dim]  Memory data unavailable.[/dim]")
+            console.print()
         return
 
     m = report.memory
@@ -313,6 +412,8 @@ def render_memory_section(report: InspectionReport, console: Console, verbose: b
     is_cpu = report.hardware.backend == BackendKind.CPU
 
     def row(label: str, measurement: Measurement[int]) -> None:
+        if not measurement.is_available and not verbose:
+            return
         val_str = fmt_measurement_bytes(measurement)
         if verbose and measurement.is_available and measurement.source:
             t.add_row(label, _source(val_str, measurement.source))
@@ -329,8 +430,12 @@ def render_memory_section(report: InspectionReport, console: Console, verbose: b
         row("Peak GPU", m.peak)
 
     row("Process RAM", m.process_ram)
-    console.print(t)
-    console.print()
+    if t.row_count:
+        console.print(t)
+        console.print()
+    elif verbose:
+        console.print("[dim]  No memory fields available.[/dim]")
+        console.print()
 
 
 def render_memory_breakdown_section(
@@ -338,14 +443,19 @@ def render_memory_breakdown_section(
 ) -> None:
     console.print(Rule("Memory Breakdown", style=_SECTION_STYLE, align="left"))
     if report.memory_breakdown is None:
-        console.print("[dim]  Memory breakdown unavailable (requires runtime plugin).[/dim]")
-        console.print()
+        if verbose:
+            console.print("[dim]  Memory breakdown unavailable (requires runtime plugin).[/dim]")
+            console.print()
         return
 
     bd = report.memory_breakdown
     t = _kv_table()
+    shown = 0
 
     for component in bd.sorted_components():
+        if not component.measurement.is_available and not verbose:
+            continue
+        shown += 1
         val_str = fmt_measurement_bytes(component.measurement)
         if verbose and component.measurement.is_available and component.measurement.source:
             t.add_row(component.name, _source(val_str, component.measurement.source))
@@ -354,17 +464,26 @@ def render_memory_breakdown_section(
         else:
             t.add_row(component.name, _val(val_str))
 
-    console.print(t)
+    if shown:
+        console.print(t)
+        if bd.total.is_available:
+            total_str = fmt_measurement_bytes(bd.total)
+            console.print(Rule(style="dim", characters="─"))
+            t2 = _kv_table()
+            label = "[bold]Breakdown total[/bold]"
+            t2.add_row(label, Text(total_str, style="bold"))
+            if verbose and bd.total.source:
+                t2.add_row("", Text(f"  [{bd.total.source}]", style="dim"))
+            console.print(t2)
+        console.print()
+    elif verbose:
+        console.print("[dim]  No measured breakdown components.[/dim]")
+        console.print()
 
-    total_str = fmt_measurement_bytes(bd.total)
-    console.print(Rule(style="dim", characters="─"))
-    t2 = _kv_table()
-    t2.add_row("[bold]Total[/bold]", Text(total_str, style="bold"))
-    console.print(t2)
-    console.print()
 
-
-def render_runtime_section(report: InspectionReport, console: Console, verbose: bool = False) -> None:
+def render_runtime_section(
+    report: InspectionReport, console: Console, verbose: bool = False
+) -> None:
     console.print(Rule("Runtime Details", style=_SECTION_STYLE, align="left"))
     if report.runtime is None:
         console.print("[dim]  Runtime details unavailable.[/dim]")
@@ -402,14 +521,11 @@ def render_optimization_section(
     from llm_inspector.ui.format import fmt_projected_bytes  # noqa: PLC0415
 
     opt = report.optimization
-    console.print(
-        Rule("Optimization Analysis (Projected)", style=_SECTION_STYLE, align="left")
-    )
+    console.print(Rule("Optimization Analysis (Projected)", style=_SECTION_STYLE, align="left"))
 
     if opt is None:
         console.print(
-            "[dim]  Optimization Analysis unavailable "
-            "(insufficient measured data).[/dim]"
+            "[dim]  Optimization Analysis unavailable (insufficient measured data).[/dim]"
         )
         console.print()
         return
@@ -483,7 +599,7 @@ def render_full_report(
         render_process_section(report, console, verbose=verbose)
 
     if show_all or collect_filter == "hardware":
-        render_hardware_section(report, console)
+        render_hardware_section(report, console, verbose=verbose)
 
     if show_all or collect_filter == "model":
         render_model_section(report, console, verbose=verbose)
@@ -500,5 +616,271 @@ def render_full_report(
     # Continuation: projected optimizations (not a separate command)
     if show_all:
         render_optimization_section(report, console, verbose=verbose)
+
+    render_footer(console)
+
+
+def _model_source_rank(source: str | None) -> int:
+    """Higher = more trustworthy for this process (attach > cmdline > HTTP API)."""
+    if not source:
+        return 0
+    s = source.lower()
+    if "vllm.engine" in s or "model_config" in s or "model_executor" in s:
+        return 3
+    if "cmdline" in s or "/proc/" in s:
+        return 2
+    if "/v1/models" in s or "get http" in s or "port probe" in s:
+        return 1
+    return 1
+
+
+def _pick_primary_report(reports: list[InspectionReport]) -> InspectionReport:
+    """
+    Prefer Worker_TP attach/cmdline model data over EngineCore HTTP probe.
+
+    EngineCore often inherits a wrong localhost :8000 /v1/models response when
+    another vLLM job is listening there; workers with attach() carry the real card.
+    """
+    from llm_inspector.utils.vllm_group import worker_label  # noqa: PLC0415
+
+    def score(r: InspectionReport) -> tuple[int, int, int, int]:
+        label = worker_label(r.pid)
+        is_worker = 1 if label.startswith("Worker_TP") else 0
+        m = r.model
+        if m is None or not m.name.is_available:
+            return (0, 0, is_worker, 0)
+        rank = _model_source_rank(m.name.source)
+        richness = sum(
+            1
+            for field in (
+                m.architecture,
+                m.parameter_count,
+                m.precision,
+                m.context_length,
+                m.tensor_parallel,
+                m.num_layers,
+            )
+            if field.is_available
+        )
+        return (rank, richness, is_worker, 1)
+
+    return max(reports, key=score)
+
+
+def _pick_optimization_report(reports: list[InspectionReport]) -> InspectionReport:
+    """Prefer a member with measured Weights so Optimization is not empty."""
+    from llm_inspector.models.results import ComponentName  # noqa: PLC0415
+
+    for r in reports:
+        bd = r.memory_breakdown
+        if bd is None:
+            continue
+        weights = bd.get(ComponentName.WEIGHTS)
+        if weights is not None and weights.measurement.is_available:
+            return r
+    for r in reports:
+        if r.optimization is not None and not r.optimization.skipped_reason:
+            return r
+    return _pick_primary_report(reports)
+
+
+def _component_bytes(report: InspectionReport, name: str) -> tuple[int | None, str | None]:
+    bd = report.memory_breakdown
+    if bd is None:
+        return None, None
+    comp = bd.get(name)
+    if comp is None or not comp.measurement.is_available:
+        return None, None
+    return comp.measurement.value, comp.measurement.source
+
+
+def _render_tp_gpu_card(
+    report: InspectionReport,
+    console: Console,
+    *,
+    label: str,
+    gpu_ids: str,
+    verbose: bool = False,
+) -> None:
+    """One measured memory table per GPU worker (default TP inspect view)."""
+    from llm_inspector.models.results import ComponentName  # noqa: PLC0415
+
+    console.print(
+        Rule(
+            f"GPU {gpu_ids}  ·  {label}  ·  PID {report.pid}",
+            style=_SECTION_STYLE,
+            align="left",
+        )
+    )
+    t = _kv_table()
+
+    weights, w_src = _component_bytes(report, ComponentName.WEIGHTS)
+    kv, kv_src = _component_bytes(report, ComponentName.KV_CACHE)
+    nvml = report.hardware.process_vram_total_bytes
+    if nvml is None:
+        nvml = report.hardware.vram_used_bytes
+
+    if weights is not None:
+        cell = _source(fmt_bytes(weights), w_src) if verbose and w_src else _val(fmt_bytes(weights))
+        t.add_row("Weights", cell)
+    elif verbose:
+        t.add_row("Weights", _reason("Not measured on this worker"))
+
+    if kv is not None:
+        cell = _source(fmt_bytes(kv), kv_src) if verbose and kv_src else _val(fmt_bytes(kv))
+        t.add_row("KV Cache", cell)
+    elif verbose:
+        t.add_row("KV Cache", _reason("Not measured on this worker"))
+
+    if nvml is not None:
+        cell = (
+            _source(fmt_bytes(nvml), "NVML process usedGpuMemory")
+            if verbose
+            else _val(fmt_bytes(nvml))
+        )
+        t.add_row("Process VRAM (NVML)", cell)
+    elif verbose:
+        t.add_row("Process VRAM (NVML)", _reason("No NVML process VRAM for this PID"))
+
+    if verbose:
+        bd = report.memory_breakdown
+        if bd is not None and bd.total.is_available:
+            t.add_row(
+                "Breakdown total",
+                _source(fmt_bytes(bd.total.value), bd.total.source or "sum of components")
+                if bd.total.source
+                else _val(fmt_bytes(bd.total.value)),
+            )
+
+    if t.row_count:
+        console.print(t)
+    console.print()
+
+
+def render_tp_group_report(
+    reports: list[InspectionReport],
+    console: Console,
+    collect_filter: str = "all",
+    verbose: bool = False,
+) -> None:
+    """
+    Render one vLLM TP job spanning multiple Worker_TP* / EngineCore PIDs.
+
+    Default view: group header, best model card, one memory table per GPU.
+    Full Hardware / Unavailable / provenance only with --verbose.
+    """
+    from llm_inspector.models.enums import BackendKind  # noqa: PLC0415
+    from llm_inspector.utils.vllm_group import worker_label  # noqa: PLC0415
+
+    if len(reports) == 1:
+        render_full_report(reports[0], console, collect_filter=collect_filter, verbose=verbose)
+        return
+
+    primary = _pick_primary_report(reports)
+    opt_report = _pick_optimization_report(reports)
+    captured_at = primary.captured_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    render_header(console, captured_at=captured_at)
+
+    show_all = collect_filter == "all"
+
+    # ── Process group (once) ────────────────────────────────────────────────
+    console.print(Rule("Process Group (vLLM TP)", style=_SECTION_STYLE, align="left"))
+    gt = _kv_table()
+    gt.add_row("Members", _val(str(len(reports))))
+    pids = ", ".join(str(r.pid) for r in reports)
+    gt.add_row("PIDs", _val(pids))
+    console.print(gt)
+    console.print()
+
+    for r in reports:
+        label = worker_label(r.pid)
+        if r.hardware.gpu_indices:
+            gpus = ",".join(str(i) for i in r.hardware.gpu_indices)
+            vram = r.hardware.process_vram_total_bytes or r.hardware.vram_used_bytes
+            gpu_cell = f"{gpus}, {fmt_bytes(vram)}" if vram is not None else gpus
+        elif r.hardware.device_index is not None:
+            gpu_cell = str(r.hardware.device_index)
+        else:
+            gpu_cell = "—"
+        console.print(f"  {label:<14} PID {r.pid:<10} GPU(s) {gpu_cell}")
+    console.print()
+
+    if show_all or collect_filter == "model":
+        render_model_section(primary, console, verbose=verbose)
+
+    # ── Per-GPU measured memory (skip empty EngineCore) ─────────────────────
+    if show_all or collect_filter in ("hardware", "memory", "memory-breakdown", "all"):
+        for r in reports:
+            label = worker_label(r.pid)
+            if (
+                label == "EngineCore"
+                and r.hardware.backend == BackendKind.CPU
+                and not r.hardware.devices
+            ):
+                continue
+
+            gpu_ids = (
+                ",".join(str(i) for i in r.hardware.gpu_indices)
+                if r.hardware.gpu_indices
+                else (str(r.hardware.device_index) if r.hardware.device_index is not None else "?")
+            )
+
+            if verbose:
+                console.print(
+                    Rule(
+                        f"{label}  ·  PID {r.pid}  ·  GPU {gpu_ids}",
+                        style=_SECTION_STYLE,
+                        align="left",
+                    )
+                )
+                if show_all or collect_filter == "hardware":
+                    render_hardware_section(r, console, verbose=True)
+                if show_all or collect_filter == "memory":
+                    render_memory_section(r, console, verbose=True)
+                if show_all or collect_filter == "memory-breakdown":
+                    render_memory_breakdown_section(r, console, verbose=True)
+            else:
+                _render_tp_gpu_card(r, console, label=label, gpu_ids=gpu_ids, verbose=False)
+
+    # ── Totals across GPU workers ───────────────────────────────────────────
+    if show_all or collect_filter in ("hardware", "memory", "all"):
+        console.print(Rule("TP Job Totals (Measured)", style=_SECTION_STYLE, align="left"))
+        tt = _kv_table()
+        vram_parts = [
+            r.hardware.process_vram_total_bytes
+            if r.hardware.process_vram_total_bytes is not None
+            else r.hardware.vram_used_bytes
+            for r in reports
+            if worker_label(r.pid) != "EngineCore"
+            or r.hardware.devices
+            or r.hardware.device_index is not None
+        ]
+        measured = [v for v in vram_parts if v is not None]
+        if measured:
+            tt.add_row("Process VRAM total (NVML)", _val(fmt_bytes(sum(measured))))
+            if verbose:
+                tt.add_row(
+                    "",
+                    Text(
+                        "  [sum of NVML process VRAM across TP worker PIDs]",
+                        style="dim",
+                    ),
+                )
+        gpu_set: list[int] = []
+        for r in reports:
+            gpu_set.extend(r.hardware.gpu_indices)
+            if not r.hardware.gpu_indices and r.hardware.device_index is not None:
+                gpu_set.append(r.hardware.device_index)
+        if gpu_set:
+            uniq = sorted(set(gpu_set))
+            tt.add_row("GPUs used", _val(",".join(str(i) for i in uniq)))
+        console.print(tt)
+        console.print()
+
+    if show_all or collect_filter == "runtime":
+        render_runtime_section(primary, console, verbose=verbose)
+
+    if show_all:
+        render_optimization_section(opt_report, console, verbose=verbose)
 
     render_footer(console)

@@ -175,10 +175,18 @@ class TestModelSection:
 
 
 class TestMemorySection:
-    def test_none_memory_shows_unavailable_message(self) -> None:
+    def test_none_memory_silent_by_default(self) -> None:
         console = _console()
         report = _base_report(memory=None)
         panels.render_memory_section(report, console)
+        output = console.file.getvalue()
+        assert "Memory" in output
+        assert "unavailable" not in output.lower()
+
+    def test_none_memory_shows_hint_when_verbose(self) -> None:
+        console = _console()
+        report = _base_report(memory=None)
+        panels.render_memory_section(report, console, verbose=True)
         output = console.file.getvalue()
         assert "unavailable" in output.lower()
 
@@ -206,10 +214,18 @@ class TestMemorySection:
 
 
 class TestMemoryBreakdownSection:
-    def test_none_breakdown_shows_unavailable_message(self) -> None:
+    def test_none_breakdown_silent_by_default(self) -> None:
         console = _console()
         report = _base_report(memory_breakdown=None)
         panels.render_memory_breakdown_section(report, console)
+        output = console.file.getvalue()
+        assert "Memory Breakdown" in output
+        assert "unavailable" not in output.lower()
+
+    def test_none_breakdown_shows_hint_when_verbose(self) -> None:
+        console = _console()
+        report = _base_report(memory_breakdown=None)
+        panels.render_memory_breakdown_section(report, console, verbose=True)
         output = console.file.getvalue()
         assert "unavailable" in output.lower()
 
@@ -238,7 +254,7 @@ class TestMemoryBreakdownSection:
         assert "Weights" in output
         assert "16.0 GB" in output
         assert "KV Cache" in output
-        assert "Total" in output
+        assert "Breakdown total" in output
         assert "20.0 GB" in output
 
 
@@ -346,3 +362,149 @@ class TestRenderFullReport:
         assert "Hardware" in output
         assert "Memory Breakdown" not in output
         assert "Optimization Analysis" not in output
+
+
+class TestPickPrimaryReport:
+    def test_prefers_worker_attach_over_enginecore_api(self) -> None:
+        from unittest.mock import patch
+
+        from llm_inspector.models.results import (
+            ComponentName,
+            MemoryBreakdownResult,
+            MemoryComponent,
+        )
+
+        engine = _base_report(
+            pid=10,
+            model=ModelResult(
+                name=Measurement.available(
+                    "openai/gpt-oss-120b",
+                    "vLLM GET http://127.0.0.1:8000/v1/models",
+                ),
+                context_length=Measurement.available(8192, "api"),
+                tensor_parallel=Measurement.available(1, "api"),
+            ),
+        )
+        worker = _base_report(
+            pid=11,
+            model=ModelResult(
+                name=Measurement.available("AceMath", "vllm.engine.model_config.model"),
+                architecture=Measurement.available("Qwen2", "vllm.engine"),
+                parameter_count=Measurement.available(772_000_000, "vllm.engine"),
+                precision=Measurement.available("bfloat16", "vllm.engine"),
+                context_length=Measurement.available(2048, "vllm.engine"),
+                tensor_parallel=Measurement.available(2, "vllm.engine"),
+                num_layers=Measurement.available(28, "vllm.engine"),
+            ),
+            memory_breakdown=MemoryBreakdownResult(
+                components=[
+                    MemoryComponent(
+                        name=ComponentName.WEIGHTS,
+                        measurement=Measurement.available(1_400_000_000, "attach"),
+                        order=0,
+                    )
+                ],
+                total=Measurement.available(1_400_000_000, "sum"),
+            ),
+        )
+
+        with patch(
+            "llm_inspector.utils.vllm_group.worker_label",
+            side_effect=lambda pid: {10: "EngineCore", 11: "Worker_TP0"}[pid],
+        ):
+            primary = panels._pick_primary_report([engine, worker])
+            opt = panels._pick_optimization_report([engine, worker])
+
+        assert primary.pid == 11
+        assert primary.model is not None
+        assert primary.model.name.value == "AceMath"
+        assert opt.pid == 11
+
+
+class TestTpGroupReport:
+    def test_default_shows_per_gpu_card_not_repeated_hardware(self) -> None:
+        from unittest.mock import patch
+
+        from llm_inspector.models.results import (
+            ComponentName,
+            GpuAttachment,
+            MemoryBreakdownResult,
+            MemoryComponent,
+        )
+
+        def worker(pid: int, gpu: int) -> InspectionReport:
+            return _base_report(
+                pid=pid,
+                hardware=HardwareResult(
+                    backend=BackendKind.CUDA,
+                    gpu_name="3080 Ti",
+                    device_index=gpu,
+                    vram_used_bytes=7 * 1024**3,
+                    driver_version="575.64",
+                    cuda_version="12.4",
+                    system_ram_total_bytes=64 * 1024**3,
+                    devices=[
+                        GpuAttachment(
+                            index=gpu,
+                            name="3080 Ti",
+                            process_vram_bytes=7 * 1024**3,
+                            vram_used_bytes=7 * 1024**3,
+                            vram_total_bytes=12 * 1024**3,
+                        )
+                    ],
+                ),
+                model=ModelResult(
+                    name=Measurement.available("AceMath", "vllm.engine.model_config.model"),
+                    tensor_parallel=Measurement.available(2, "vllm.engine"),
+                ),
+                memory_breakdown=MemoryBreakdownResult(
+                    components=[
+                        MemoryComponent(
+                            name=ComponentName.WEIGHTS,
+                            measurement=Measurement.available(1_400_000_000, "attach"),
+                            order=0,
+                        ),
+                        MemoryComponent(
+                            name=ComponentName.KV_CACHE,
+                            measurement=Measurement.available(3_500_000_000, "attach"),
+                            order=1,
+                        ),
+                    ],
+                    total=Measurement.available(4_900_000_000, "sum"),
+                ),
+            )
+
+        engine = _base_report(
+            pid=10,
+            hardware=HardwareResult(backend=BackendKind.CPU),
+            model=ModelResult(
+                name=Measurement.available(
+                    "openai/gpt-oss-120b",
+                    "vLLM GET http://127.0.0.1:8000/v1/models",
+                )
+            ),
+        )
+        reports = [engine, worker(11, 0), worker(12, 1)]
+
+        console = _console()
+        with patch(
+            "llm_inspector.utils.vllm_group.worker_label",
+            side_effect=lambda pid: {
+                10: "EngineCore",
+                11: "Worker_TP0",
+                12: "Worker_TP1",
+            }[pid],
+        ):
+            panels.render_tp_group_report(reports, console)
+
+        output = console.file.getvalue()
+        assert "Process Group" in output
+        assert "AceMath" in output
+        assert "gpt-oss-120b" not in output
+        assert "Weights" in output
+        assert "KV Cache" in output
+        assert "Process VRAM (NVML)" in output
+        assert "Process VRAM total (NVML)" in output
+        # Default view: no repeated Hardware blocks / driver spam
+        assert output.count("Driver") == 0
+        assert output.count("System RAM") == 0
